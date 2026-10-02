@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 RUTA DE LUBRICACIÓN - App de registro semanal
 Lee la plantilla maestra (Excel) y guarda los registros en un Excel de datos.
@@ -64,7 +63,7 @@ def parse_bloques(archivo) -> list:
     """Extrae los bloques de checklist de cada hoja (área)."""
     xl = pd.ExcelFile(archivo)
     bloques = []
-    for hoja in xl.sheetnames:
+    for hoja in xl.sheet_names:
         if "HORARIO" in hoja.upper():
             continue
         df = pd.read_excel(archivo, sheet_name=hoja, header=None)
