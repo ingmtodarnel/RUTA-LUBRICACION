@@ -1,209 +1,47 @@
-"""RUTA DE LUBRICACIÓN - App tipo tablet
-Mantiene la lógica de la app original y adopta una interfaz tipo dashboard/tablet.
-Ejecutar con: streamlit run app.py
+# -*- coding: utf-8 -*-
+"""
+RUTA DE LUBRICACIÓN - Dashboard oscuro
+Basado directamente en:
+RUTA LUB V2 OCT 2026(1).xlsx
+
+La aplicación:
+1. Lee HOJA 1 HORARIO para saber qué máquina corresponde a cada día/hora.
+2. Lee las hojas de actividades y sus tiempos.
+3. Relaciona la máquina del horario con el bloque de actividades correspondiente.
+4. Permite marcar cada actividad individualmente.
+5. Calcula el tiempo de las actividades seleccionadas.
+6. Guarda el resultado en datos_ruta_lub.xlsx.
 """
 
-import re
-from datetime import datetime, timedelta
 from pathlib import Path
+from datetime import datetime, date, timedelta
+import re
+import html
 
 import pandas as pd
 import streamlit as st
-
-BASE_DIR = Path(__file__).parent
-ARCHIVO_PLANTILLA = BASE_DIR / "ruta_lub_v2_oct_2026.xlsx"
-ARCHIVO_DATOS = BASE_DIR / "datos_ruta_lub.xlsx"
-
-DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
+from openpyxl import load_workbook
 
 
-# ---------------------------------------------------------------------------
-# PARSER DE LA PLANTILLA ORIGINAL
-# ---------------------------------------------------------------------------
-
-def normalizar(texto: str) -> str:
-    texto = str(texto).upper()
-    texto = re.sub(r"[ÁÀ]", "A", texto)
-    texto = re.sub(r"[ÉÈ]", "E", texto)
-    texto = re.sub(r"[ÍÌ]", "I", texto)
-    texto = re.sub(r"[ÓÒ]", "O", texto)
-    texto = re.sub(r"[ÚÙ]", "U", texto)
-    texto = re.sub(r"[\s\-\_\.]+", "", texto)
-    return texto
-
-
-@st.cache_data(show_spinner=False)
-def parse_horario(archivo) -> list:
-    df = pd.read_excel(archivo, sheet_name=0, header=None)
-    dias = []
-    for fila_encabezado, rango in [(3, range(4, 17)), (20, range(21, 40))]:
-        for col in (1, 5, 9):
-            dia = str(df.iloc[fila_encabezado, col]).strip()
-            if dia not in DIAS_SEMANA:
-                continue
-            maquinas = []
-            for r in rango:
-                valor = df.iloc[r, col]
-                if pd.notna(valor) and str(valor).strip():
-                    maquinas.append(str(valor).strip())
-            dias.append({"dia": dia, "maquinas": maquinas})
-    return dias
-
-
-@st.cache_data(show_spinner=False)
-def parse_bloques(archivo) -> list:
-    xl = pd.ExcelFile(archivo)
-    bloques = []
-    for hoja in xl.sheet_names:
-        if "HORARIO" in hoja.upper():
-            continue
-
-        df = pd.read_excel(archivo, sheet_name=hoja, header=None)
-        n = len(df)
-        i = 0
-        titulo_pendiente = None
-
-        while i < n:
-            col0 = str(df.iloc[i, 0]).strip() if pd.notna(df.iloc[i, 0]) else ""
-
-            if col0 == "ACTIVIDADES":
-                titulo = titulo_pendiente or hoja
-                titulo_pendiente = None
-
-                for j in range(i, max(-1, i - 4), -1):
-                    fila = df.iloc[j]
-                    if any(str(v).strip() == "FECHA" for v in fila if pd.notna(v)):
-                        candidatos = [
-                            str(v).strip()
-                            for v in fila.iloc[2:]
-                            if pd.notna(v) and str(v).strip() != "FECHA"
-                        ]
-                        if candidatos:
-                            titulo = candidatos[0]
-                        break
-
-                maquinas, vistos = [], set()
-                for v in df.iloc[i, 2:]:
-                    if pd.notna(v) and str(v).strip():
-                        m = str(v).strip()
-                        if m in vistos:
-                            m = f"{m} (2)"
-                        vistos.add(m)
-                        maquinas.append(m)
-
-                actividades = []
-                k = i + 1
-
-                while k < n:
-                    fila = df.iloc[k]
-                    c0 = fila[0]
-                    c0s = str(c0).strip() if pd.notna(c0) else ""
-
-                    if c0s in ("ACTIVIDADES", "EJECUTADO POR:"):
-                        break
-                    if any(str(v).strip() == "FECHA" for v in fila if pd.notna(v)):
-                        break
-
-                    if c0s and not re.match(r"^\d+\.?", c0s) and any(
-                        pd.notna(v) and str(v).strip() for v in fila.iloc[2:]
-                    ):
-                        cand = [
-                            str(v).strip()
-                            for v in fila.iloc[2:]
-                            if pd.notna(v) and str(v).strip()
-                        ]
-                        if cand:
-                            titulo_pendiente = cand[0]
-                        break
-
-                    if c0s:
-                        tiempo = fila[1] if pd.notna(fila[1]) else None
-                        actividades.append({"actividad": c0s, "tiempo": tiempo})
-                    k += 1
-
-                if maquinas and actividades:
-                    bloques.append({
-                        "area": hoja,
-                        "titulo": titulo,
-                        "maquinas": maquinas,
-                        "actividades": actividades,
-                    })
-                i = k
-            else:
-                i += 1
-
-    return bloques
-
-
-# ---------------------------------------------------------------------------
-# CAPA DE DATOS ORIGINAL
-# ---------------------------------------------------------------------------
-
-def cargar_datos() -> tuple:
-    if ARCHIVO_DATOS.exists():
-        xl = pd.ExcelFile(ARCHIVO_DATOS)
-        registros = (
-            pd.read_excel(xl, "REGISTROS")
-            if "REGISTROS" in xl.sheet_names
-            else pd.DataFrame()
-        )
-        checks = (
-            pd.read_excel(xl, "CHECKS")
-            if "CHECKS" in xl.sheet_names
-            else pd.DataFrame()
-        )
-    else:
-        registros = pd.DataFrame(
-            columns=[
-                "fecha", "dia", "maquina", "ot",
-                "ejecuto", "recibio", "observaciones"
-            ]
-        )
-        checks = pd.DataFrame(
-            columns=[
-                "fecha", "area", "bloque", "maquina",
-                "actividad", "tiempo", "ok", "ejecutado_por"
-            ]
-        )
-    return registros, checks
-
-
-def guardar_datos(registros: pd.DataFrame, checks: pd.DataFrame) -> None:
-    with pd.ExcelWriter(ARCHIVO_DATOS, engine="openpyxl") as writer:
-        registros.to_excel(writer, sheet_name="REGISTROS", index=False)
-        checks.to_excel(writer, sheet_name="CHECKS", index=False)
-
-
-def dia_a_ingles(dia: str) -> str:
-    return {
-        "Lunes": "Monday",
-        "Martes": "Tuesday",
-        "Miércoles": "Wednesday",
-        "Jueves": "Thursday",
-        "Viernes": "Friday",
-        "Sábado": "Saturday",
-    }.get(dia, "")
-
-
-def to_excel_bytes(df: pd.DataFrame) -> bytes:
-    import io
-
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
-    return buffer.getvalue()
-
-
-# ---------------------------------------------------------------------------
-# CONFIGURACIÓN / ESTILO TIPO TABLET
-# ---------------------------------------------------------------------------
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
 
 st.set_page_config(
     page_title="Ruta de Lubricación",
-    page_icon="🛢️",
+    page_icon="💧",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+BASE_DIR = Path(__file__).resolve().parent
+ARCHIVO_RUTA = BASE_DIR / "RUTA LUB V2 OCT 2026(1).xlsx"
+ARCHIVO_DATOS = BASE_DIR / "datos_ruta_lub.xlsx"
+
+
+# ============================================================
+# TEMA OSCURO
+# ============================================================
 
 st.markdown(
     """
@@ -213,141 +51,281 @@ st.markdown(
 }
 
 .stApp {
-    background-color: #F1F5F9;
-    max-width: 100vw;
-    overflow-x: hidden;
+    background:
+        radial-gradient(circle at 10% 0%, rgba(0,140,255,.11), transparent 27%),
+        radial-gradient(circle at 92% 10%, rgba(105,55,255,.08), transparent 25%),
+        #03080f;
+    color: #f5f8ff;
 }
 
 .main .block-container {
-    padding: 0.35rem 0.5rem 1.5rem !important;
     max-width: 100% !important;
+    padding: 0 !important;
 }
 
-div[data-testid="stVerticalBlock"] {
-    gap: 0.35rem !important;
-}
-
-.stButton > button {
-    border-radius: 8px;
-    font-weight: 700;
-    font-size: 12px !important;
-    min-height: 38px;
-}
-
-.stSelectbox label,
-.stTextInput label,
-.stDateInput label,
-.stTextArea label {
-    color: #475569 !important;
-    font-size: 12px !important;
+p, span, label, div, input, textarea, button {
+    font-family: "Segoe UI", Arial, sans-serif;
 }
 
 .tablet-header {
-    background: linear-gradient(135deg, #0EA5E9 0%, #38BDF8 100%);
-    color: white;
-    padding: 12px 16px;
-    border-radius: 0 0 16px 16px;
-    text-align: center;
-    font-size: 18px;
-    font-weight: 700;
-    margin: -0.35rem -0.5rem 12px;
-    box-shadow: 0 4px 15px rgba(14,165,233,.25);
-    position: sticky;
-    top: 0;
-    z-index: 100;
+    background: linear-gradient(90deg, #061321, #081827);
+    border-bottom: 2px solid #0796ff;
+    padding: 17px 34px;
+    margin-bottom: 20px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.35);
 }
 
-.home-screen {
-    padding: 8px 5px;
-    color: #0F172A;
-}
-
-.big-counter {
-    font-size: 58px;
+.header-title {
+    color: #f8fbff;
+    font-size: 30px;
     font-weight: 900;
-    color: #0EA5E9;
-    line-height: 1;
-    margin: 5px 0;
-    text-align: center;
 }
 
-.counter-label {
-    font-size: 16px;
-    color: #475569;
-    margin-bottom: 15px;
-    text-align: center;
-}
-
-.dashboard-card {
-    background: white;
-    border: 1px solid #E2E8F0;
-    border-radius: 14px;
-    padding: 15px;
-    box-shadow: 0 2px 10px rgba(15,23,42,.06);
-    min-height: 110px;
-}
-
-.dashboard-card h3 {
-    margin: 0 0 6px;
+.header-subtitle {
+    color: #8dccff;
     font-size: 15px;
-    color: #0F172A;
 }
 
-.dashboard-card p {
-    margin: 0;
-    font-size: 12px;
-    color: #64748B;
-    line-height: 1.45;
+.header-meta {
+    color: #f4f8ff;
+    font-size: 15px;
+    font-weight: 800;
+    text-align: right;
+}
+
+.header-meta small {
+    color: #85c9ff;
+    font-weight: 500;
+}
+
+.page {
+    padding: 0 30px 28px;
+}
+
+.welcome {
+    background: linear-gradient(110deg,#081421,#06101a);
+    border: 1px solid #17334c;
+    border-radius: 15px;
+    padding: 18px 24px;
+    margin-bottom: 15px;
+}
+
+.welcome-title {
+    color: #f7fbff;
+    font-size: 29px;
+    font-weight: 900;
+}
+
+.welcome-sub {
+    color: #91cfff;
+    font-size: 16px;
+}
+
+.panel {
+    background: #07111b;
+    border: 1px solid #17324b;
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 15px;
+}
+
+.panel-title {
+    color: #f5f9ff;
+    font-size: 21px;
+    font-weight: 900;
+}
+
+.panel-sub {
+    color: #8eabc4;
+    font-size: 13px;
 }
 
 .kpi {
-    background: white;
-    border-radius: 12px;
-    padding: 10px 16px;
-    min-width: 100px;
-    text-align: center;
-    border: 1px solid #E2E8F0;
+    background: #07111b;
+    border: 1px solid #17324b;
+    border-radius: 14px;
+    padding: 16px 18px;
+    min-height: 120px;
+}
+
+.kpi-blue { border-color:#075ca7; }
+.kpi-green { border-color:#087965; }
+.kpi-orange { border-color:#8a4b0b; }
+.kpi-purple { border-color:#5a2b9c; }
+
+.kpi-label {
+    color: #9bcbef;
+    font-size: 14px;
+    font-weight: 800;
 }
 
 .kpi-value {
-    font-size: 22px;
-    font-weight: 800;
+    color: #ffffff;
+    font-size: 30px;
+    font-weight: 900;
+    margin-top: 7px;
 }
 
-.kpi-label {
-    font-size: 10px;
-    color: #64748B;
+.kpi-small {
+    color: #829bb2;
+    font-size: 12px;
 }
 
-.section-title {
-    color: #0F172A;
-    font-size: 16px;
-    font-weight: 800;
-    margin: 10px 0 5px;
+.menu-title {
+    color: #f8fbff;
+    font-size: 25px;
+    font-weight: 900;
+    margin: 20px 0 3px;
 }
 
-.info-panel {
-    background: white;
-    border: 1px solid #E2E8F0;
-    border-radius: 12px;
-    padding: 12px;
-    margin: 6px 0;
+.menu-sub {
+    color: #8ec8f5;
+    margin-bottom: 12px;
 }
 
-@media (max-width: 768px) {
-    .tablet-header {
-        font-size: 16px;
-        padding: 10px 12px;
-    }
+.card {
+    background: linear-gradient(145deg,#08131f,#050b12);
+    border: 1px solid #183c59;
+    border-radius: 14px;
+    padding: 18px;
+    min-height: 275px;
+    text-align: center;
+}
 
-    .big-counter {
-        font-size: 46px;
-    }
+.card-blue { border-color:#087fe5; }
+.card-green { border-color:#08a978; }
+.card-orange { border-color:#ff7900; }
+.card-purple { border-color:#7b42ec; }
 
-    .dashboard-card {
-        min-height: 95px;
-        padding: 12px;
-    }
+.card-icon {
+    width: 92px;
+    height: 92px;
+    margin: 0 auto 10px;
+    border-radius: 50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:40px;
+}
+
+.blue { background:#087de9; }
+.green { background:#08a978; }
+.orange { background:#ff7900; }
+.purple { background:#7139dc; }
+
+.card-title {
+    color:#fff;
+    font-size:23px;
+    font-weight:900;
+}
+
+.card-text {
+    color:#a8c2d9;
+    font-size:14px;
+    line-height:1.4;
+    min-height:56px;
+    margin:8px 0;
+}
+
+.stButton > button {
+    min-height:44px !important;
+    border-radius:10px !important;
+    background:#0a1928 !important;
+    border:1px solid #28506c !important;
+    color:#f7fbff !important;
+    font-weight:800 !important;
+}
+
+.stButton > button:hover {
+    border-color:#078fff !important;
+    background:#10283d !important;
+}
+
+button[kind="primary"] {
+    background:linear-gradient(90deg,#087de9,#0b92f4) !important;
+    border-color:#087de9 !important;
+}
+
+div[data-baseweb="select"] > div,
+.stTextInput input,
+.stTextArea textarea,
+.stDateInput input,
+.stNumberInput input {
+    background:#07131f !important;
+    color:#f5f9ff !important;
+    border-color:#24445f !important;
+}
+
+[data-testid="stDataFrame"] {
+    border:1px solid #183850 !important;
+    border-radius:10px;
+}
+
+.activity {
+    background:#08131e;
+    border:1px solid #1b3b55;
+    border-radius:12px;
+    padding:12px 14px;
+    margin:6px 0;
+}
+
+.activity:hover {
+    border-color:#0b8ff2;
+}
+
+.activity-name {
+    color:#eef7ff;
+    font-size:14px;
+    font-weight:700;
+}
+
+.activity-time {
+    color:#68bfff;
+    font-weight:900;
+    white-space:nowrap;
+}
+
+.activity-special {
+    color:#ffb45b;
+    font-size:11px;
+    margin-top:4px;
+}
+
+.footer {
+    background:#07111b;
+    border:1px solid #17324b;
+    border-radius:14px;
+    padding:15px;
+    text-align:center;
+    color:#79c8ff;
+    font-weight:800;
+    margin-top:18px;
+}
+
+.badge {
+    display:inline-block;
+    border-radius:999px;
+    padding:5px 10px;
+    background:#0b2032;
+    color:#84caff;
+    border:1px solid #1d4967;
+    font-size:12px;
+    font-weight:800;
+}
+
+.danger-note {
+    background:#24150a;
+    border:1px solid #73420d;
+    color:#ffc77d;
+    border-radius:10px;
+    padding:10px 12px;
+}
+
+@media (max-width: 900px) {
+    .page { padding:0 12px 20px; }
+    .tablet-header { padding:14px 16px; }
+    .header-title { font-size:23px; }
+    .header-meta { display:none; }
 }
 </style>
 """,
@@ -355,834 +333,1037 @@ div[data-testid="stVerticalBlock"] {
 )
 
 
-# ---------------------------------------------------------------------------
-# ESTADO DE LA APLICACIÓN
-# ---------------------------------------------------------------------------
+# ============================================================
+# UTILIDADES
+# ============================================================
 
-horario = parse_horario(ARCHIVO_PLANTILLA)
-bloques = parse_bloques(ARCHIVO_PLANTILLA)
-registros, checks = cargar_datos()
-
-for key, value in {
-    "pagina": "home",
-    "fecha_trabajo": datetime.now().date(),
-    "lubricador": "",
-    "area_check": None,
-    "bloque_check": 0,
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
+def esc(x):
+    return html.escape("" if x is None else str(x))
 
 
-def ir(pagina):
+def normalizar_maquina(valor):
+    if valor is None:
+        return ""
+    s = str(valor).strip().upper()
+    s = s.replace(" ", "").replace("-", "")
+    s = s.replace("_", "")
+    return s
+
+
+def extraer_numero_tf(s):
+    m = re.search(r"TF\s*0*(\d+)", str(s).upper())
+    return int(m.group(1)) if m else None
+
+
+def maquina_equivalente(maquina):
+    """
+    Normaliza nombres del HORARIO para compararlos con las columnas
+    de las hojas de actividades.
+    """
+    raw = str(maquina).strip().upper()
+    n = normalizar_maquina(raw)
+
+    aliases = {
+        "EL-11": "EL11",
+        "EL11": "EL11",
+        "EL-14": "EL14",
+        "EL14": "EL14",
+        "EXTTF1": "EXT01",
+        "EXTTF2": "EXT02",
+        "EXTTF3": "EXT03",
+        "TF04": "TF04",
+        "TF05": "TF05",
+        "TF07": "TF07",
+        "TF10": "TF10",
+        "TF11": "TF11",
+        "TF12": "TF12",
+        "TF13": "TF13",
+        "TF14": "TF14",
+        "TF15": "TF15",
+        "TF16": "TF16",
+        "TF17": "TF17",
+        "TF20": "TF20",
+        "TF22": "TF22+ML",
+        "TF23": "TF23+ML",
+        "TF24": "TF24",
+        "TF26": "TF26",
+        "TF31": "TF31",
+        "TF32": "TF32",
+        "TF34": "TF34",
+        "TF35": "TF35",
+        "TF36": "TF36",
+        "TF37": "TF37",
+        "TF38": "TF38",
+        "TF39": "TF39",
+        "TF40": "TF40",
+        "TF41": "TF41",
+        "TF42": "TF42",
+        "TF43": "TF43",
+        "TF44": "TF44",
+        "TF45": "TF45",
+        "TF46": "TF46",
+        "TF47": "TF47",
+        "TF48": "TF48",
+        "TF49": "TF49",
+        "TF50": "TF50",
+        "TF01": "TF01",
+        "TF02": "TF02",
+        "TF03": "TF03",
+        "MP": "MP",
+        "TAN1": "TAN1",
+        "TAN2": "TAN2",
+        "TAN3": "TAN3",
+        "TAN4": "TAN4",
+        "TAN6": "TAN6",
+    }
+    return aliases.get(raw.replace(" ", "").replace("-", ""), raw)
+
+
+def actividad_especial_para_maquina(texto, maquina):
+    """
+    Solo aplica las restricciones explícitas que aparecen en el Excel.
+    No inventa otras restricciones.
+    """
+    t = str(texto).upper()
+    m = maquina_equivalente(maquina).upper()
+
+    if "SOLO DAVIS" in t and m != "DAVIS":
+        return False
+
+    if "SOLO APLICA TF15" in t and m != "TF15":
+        return False
+
+    if "SOLO PARA TF41-42" in t:
+        if m not in {"TF41", "TF42"}:
+            return False
+
+    return True
+
+
+def frecuencia_permite(texto, maquina, fecha):
+    """
+    Respeta las frecuencias explícitas del texto:
+    - Viernes
+    - Sábado
+    - Quincenal
+    """
+    t = str(texto).upper()
+    dia = fecha.weekday()  # lunes=0 ... sábado=5
+
+    if "VIERNES" in t and dia != 4:
+        return False
+
+    if "SÁBADO" in t or "SABADO" in t:
+        if dia != 5:
+            return False
+
+    return True
+
+
+# ============================================================
+# LECTURA DEL EXCEL MAESTRO
+# ============================================================
+
+@st.cache_data(show_spinner=False)
+def leer_excel_maestro(ruta):
+    wb = load_workbook(ruta, data_only=True)
+
+    # ---------- HORARIO ----------
+    ws = wb["HOJA 1 HORARIO"]
+
+    horario = []
+
+    # Lunes, martes, miércoles: filas 5-16
+    grupos = [
+        ("Lunes", 5, 16, 1, 2),
+        ("Martes", 5, 16, 5, 6),
+        ("Miércoles", 5, 16, 9, 10),
+        ("Jueves", 22, 40, 1, 2),
+        ("Viernes", 22, 40, 5, 6),
+        ("Sábado", 22, 40, 9, 10),
+    ]
+
+    for dia, r1, r2, col_maquina, col_ot in grupos:
+        for r in range(r1, r2 + 1):
+            hora = ws.cell(r, 1).value
+            maquina = ws.cell(r, col_maquina).value
+            ot = ws.cell(r, col_ot).value
+
+            if maquina is None:
+                continue
+
+            maquina = str(maquina).strip()
+
+            if maquina in {"ALISTAMIENTO"}:
+                continue
+
+            if str(maquina).startswith("Nota:"):
+                continue
+
+            horario.append({
+                "dia": dia,
+                "hora": str(hora).strip() if hora else "",
+                "maquina": maquina,
+                "ot": "" if ot is None else str(ot),
+            })
+
+    # ---------- ACTIVIDADES ----------
+    actividades = []
+
+    def leer_bloque(ws_name, header_row, start_row, end_row, start_col=3):
+        ws = wb[ws_name]
+        headers = {}
+
+        for c in range(start_col, ws.max_column + 1):
+            value = ws.cell(header_row, c).value
+            if value:
+                headers[c] = str(value).strip()
+
+        for r in range(start_row, end_row + 1):
+            actividad = ws.cell(r, 1).value
+            tiempo = ws.cell(r, 2).value
+
+            if actividad is None:
+                continue
+
+            actividad = str(actividad).strip()
+            if not actividad:
+                continue
+
+            try:
+                minutos = float(tiempo) if tiempo is not None else None
+            except Exception:
+                minutos = None
+
+            # El bloque aplica a las máquinas nombradas en el encabezado.
+            for c, maquina in headers.items():
+                actividades.append({
+                    "hoja": ws_name,
+                    "bloque": f"{ws_name} / bloque {header_row}",
+                    "maquina_columna": maquina,
+                    "actividad": actividad,
+                    "minutos": minutos,
+                    "fila_excel": r,
+                })
+
+    # EXTRUSION
+    leer_bloque("EXTRUSION", 4, 5, 20)
+    leer_bloque("EXTRUSION", 24, 25, 39)
+
+    # TF ESPUMADOS
+    leer_bloque("TF ESPUMADOS", 4, 5, 22)
+    leer_bloque("TF ESPUMADOS", 26, 27, 45)
+
+    # TF PRESION
+    leer_bloque("TF PRESION", 4, 5, 16)
+    leer_bloque("TF PRESION", 20, 21, 34)
+
+    # TF RIG
+    leer_bloque("TF RIG", 4, 5, 17)
+    leer_bloque("TF RIG", 21, 22, 34)
+
+    # ML PERIFERICO: no tiene un bloque de máquina por fila; se conserva
+    # como bloque especial del sábado/quincenal.
+    ws = wb["ML Periferico"]
+    for r in range(4, ws.max_row + 1):
+        actividad = ws.cell(r, 1).value
+        tiempo = ws.cell(r, 2).value
+        if actividad is None:
+            continue
+        try:
+            minutos = float(tiempo) if tiempo is not None else None
+        except Exception:
+            minutos = None
+
+        actividades.append({
+            "hoja": "ML Periferico",
+            "bloque": "ML Periferico / sábado quincenal",
+            "maquina_columna": "ESPECIAL_ML",
+            "actividad": str(actividad).strip(),
+            "minutos": minutos,
+            "fila_excel": r,
+        })
+
+    return horario, actividades
+
+
+def cargar_maestro():
+    if not ARCHIVO_RUTA.exists():
+        st.error(
+            f"No encuentro el Excel maestro:\n\n`{ARCHIVO_RUTA.name}`\n\n"
+            "Ponlo en la misma carpeta que este programa."
+        )
+        st.stop()
+    return leer_excel_maestro(str(ARCHIVO_RUTA))
+
+
+HORARIO, ACTIVIDADES = cargar_maestro()
+
+
+# ============================================================
+# GUARDADO DE REGISTROS
+# ============================================================
+
+COLUMNAS_DATOS = [
+    "fecha",
+    "dia",
+    "hora",
+    "maquina",
+    "hoja",
+    "bloque",
+    "fila_excel",
+    "actividad",
+    "minutos",
+    "estado",
+    "ejecutor",
+    "ot",
+    "recibio",
+    "observacion",
+    "fecha_hora_guardado",
+]
+
+
+def cargar_datos():
+    if not ARCHIVO_DATOS.exists():
+        return pd.DataFrame(columns=COLUMNAS_DATOS)
+
+    try:
+        df = pd.read_excel(ARCHIVO_DATOS)
+    except Exception:
+        return pd.DataFrame(columns=COLUMNAS_DATOS)
+
+    for c in COLUMNAS_DATOS:
+        if c not in df.columns:
+            df[c] = ""
+
+    return df[COLUMNAS_DATOS]
+
+
+def guardar_datos(df):
+    df.to_excel(ARCHIVO_DATOS, index=False)
+
+
+if "datos" not in st.session_state:
+    st.session_state.datos = cargar_datos()
+
+if "pagina" not in st.session_state:
+    st.session_state.pagina = "home"
+
+if "fecha_trabajo" not in st.session_state:
+    st.session_state.fecha_trabajo = date.today()
+
+if "ejecutor" not in st.session_state:
+    st.session_state.ejecutor = ""
+
+if "maquina_seleccionada" not in st.session_state:
+    st.session_state.maquina_seleccionada = None
+
+
+def ir(pagina, maquina=None):
     st.session_state.pagina = pagina
+    if maquina is not None:
+        st.session_state.maquina_seleccionada = maquina
     st.rerun()
 
 
-def nav_atras(pagina):
-    c1, c2 = st.columns(2)
+def upsert_actividad(registro):
+    df = st.session_state.datos.copy()
 
-    with c1:
-        if st.button(
-            "← Volver",
-            use_container_width=True,
-            key=f"back_{pagina}",
-        ):
-            ir(pagina)
+    if df.empty:
+        df = pd.DataFrame(columns=COLUMNAS_DATOS)
 
-    with c2:
-        if st.button(
-            "⌂ Inicio",
-            use_container_width=True,
-            key=f"home_{pagina}",
-        ):
-            ir("home")
-
-
-def header_tablet(titulo, badge=""):
-    badge_html = (
-        f"<span style='font-size:12px;opacity:.85'>{badge}</span>"
-        if badge
-        else ""
+    mask = (
+        df["fecha"].astype(str).eq(str(registro["fecha"]))
+        & df["maquina"].astype(str).eq(str(registro["maquina"]))
+        & df["actividad"].astype(str).eq(str(registro["actividad"]))
+        & df["hoja"].astype(str).eq(str(registro["hoja"]))
     )
 
-    st.markdown(
-        f"""
-        <div class="tablet-header"
-             style="display:flex;align-items:center;justify-content:space-between">
-            <span>{titulo}</span>{badge_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if mask.any():
+        idx = df.index[mask][0]
+        for k, v in registro.items():
+            df.at[idx, k] = v
+    else:
+        df = pd.concat([df, pd.DataFrame([registro])], ignore_index=True)
+
+    st.session_state.datos = df
 
 
-def fecha_actual_str():
-    return st.session_state.fecha_trabajo.strftime("%d/%m/%Y")
+# ============================================================
+# RELACIÓN MÁQUINA -> ACTIVIDADES
+# ============================================================
+
+def buscar_actividades(maquina, fecha):
+    m = maquina_equivalente(maquina)
+    resultado = []
+
+    # Casos especiales: MP solo tiene bloque explícito en ML Periferico,
+    # y ese bloque está definido como sábado/quincenal.
+    if m == "MP" and fecha.weekday() == 5:
+        for a in ACTIVIDADES:
+            if a["hoja"] == "ML Periferico":
+                resultado.append(a)
+        return resultado
+
+    for a in ACTIVIDADES:
+        if a["hoja"] == "ML Periferico":
+            continue
+
+        col = normalizar_maquina(a["maquina_columna"])
+        mm = normalizar_maquina(m)
+
+        # Coincidencia directa con el encabezado de la hoja.
+        coincide = col == mm
+
+        # El horario TF07 usa una columna TF06/07.
+        if not coincide and mm == "TF07" and col == "TF06/07":
+            coincide = True
+
+        # TF22 y TF23 están en el bloque sabatino de TF RIG.
+        if not coincide and mm == "TF22ML" and col == "TF22+ML":
+            coincide = True
+        if not coincide and mm == "TF23ML" and col == "TF23+ML":
+            coincide = True
+
+        # TF20 aparece en ambos bloques de TF RIG. Se conserva el bloque
+        # correspondiente a la fila de actividades sin fusionarlos.
+        if not coincide and mm == "TF20" and col == "TF20":
+            coincide = True
+
+        if coincide:
+            if actividad_especial_para_maquina(a["actividad"], maquina) and frecuencia_permite(
+                a["actividad"], maquina, fecha
+            ):
+                resultado.append(a)
+
+    # Evita duplicar exactamente la misma actividad proveniente de bloques
+    # repetidos con el mismo nombre y tiempo.
+    unicos = []
+    vistos = set()
+    for a in resultado:
+        key = (a["hoja"], a["fila_excel"], a["actividad"], a["minutos"])
+        if key not in vistos:
+            vistos.add(key)
+            unicos.append(a)
+
+    return unicos
 
 
-# ---------------------------------------------------------------------------
-# PANTALLA INICIO
-# ---------------------------------------------------------------------------
+def obtener_ruta_del_dia(fecha):
+    dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
+    dia = dias[fecha.weekday()]
+    return [x for x in HORARIO if x["dia"] == dia]
 
-def pantalla_home():
-    global registros, checks
 
-    header_tablet("🛢️ Ruta de Lubricación", "Planta Madrid · 2026")
+# ============================================================
+# CABECERA
+# ============================================================
 
+def header():
     f = st.session_state.fecha_trabajo
-    f_str = f.strftime("%Y-%m-%d")
-
-    hechos = len(registros[registros["fecha"] == f_str])
-    checks_hoy = len(checks[checks["fecha"] == f_str])
-
     lunes = f - timedelta(days=f.weekday())
-    total_hechas_semana = sum(
-        len(registros[registros["fecha"] == (lunes + timedelta(days=i)).strftime("%Y-%m-%d")])
-        for i in range(6)
-    )
-
-    st.markdown("<div class='home-screen'>", unsafe_allow_html=True)
+    domingo = lunes + timedelta(days=6)
+    semana = f.isocalendar().week
 
     st.markdown(
         f"""
-        <div style="text-align:left;font-size:20px;font-weight:700;
-                    color:#475569;margin:4px 0 8px">
-            📅 {f.strftime('%A %d/%m/%Y').capitalize()}
+        <div class="tablet-header">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:20px;">
+                <div style="display:flex;align-items:center;gap:15px;">
+                    <div style="font-size:48px;">💧</div>
+                    <div>
+                        <div class="header-title">Ruta de Lubricación</div>
+                        <div class="header-subtitle">
+                            Registro y control semanal de lubricación
+                        </div>
+                    </div>
+                </div>
+                <div class="header-meta">
+                    📅 Semana {semana}<br>
+                    <small>
+                        {lunes.strftime('%d/%m/%Y')} - {domingo.strftime('%d/%m/%Y')}
+                    </small>
+                </div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+
+# ============================================================
+# HOME
+# ============================================================
+
+def home():
+    header()
+    f = st.session_state.fecha_trabajo
+    ruta = obtener_ruta_del_dia(f)
+    datos = st.session_state.datos
+
+    fecha_str = f.strftime("%Y-%m-%d")
+    registros_hoy = datos[datos["fecha"].astype(str) == fecha_str]
+    completadas = len(registros_hoy[registros_hoy["estado"] == "Completada"])
+
+    total_hoy = 0
+    for item in ruta:
+        total_hoy += len(buscar_actividades(item["maquina"], f))
+
+    pct = round(completadas / total_hoy * 100) if total_hoy else 0
+
+    st.markdown('<div class="page">', unsafe_allow_html=True)
+
     st.markdown(
-        f"""
-        <div class="big-counter">{hechos}</div>
-        <div class="counter-label">registros realizados hoy</div>
+        """
+        <div class="welcome">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div>
+                    <div class="welcome-title">⚙️ Bienvenido</div>
+                    <div class="welcome-sub">
+                        Selecciona una opción para comenzar
+                    </div>
+                </div>
+                <div style="color:#0795ff;font-size:18px;font-weight:900;">
+                    🏭 Ruta de Lubricación
+                </div>
+            </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns(3)
+    k1, k2, k3, k4 = st.columns(4)
 
-    with c1:
+    with k1:
         st.markdown(
             f"""
-            <div class="kpi">
-                <div class="kpi-value" style="color:#0EA5E9">{hechos}</div>
-                <div class="kpi-label">Ruta hoy</div>
+            <div class="kpi kpi-blue">
+                <div class="kpi-label">📋 Actividades de hoy</div>
+                <div class="kpi-value">{total_hoy}</div>
+                <div class="kpi-small">según el Excel maestro</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    with c2:
+    with k2:
         st.markdown(
             f"""
-            <div class="kpi">
-                <div class="kpi-value" style="color:#10B981">{checks_hoy}</div>
-                <div class="kpi-label">Checklist hoy</div>
+            <div class="kpi kpi-green">
+                <div class="kpi-label">✓ Completadas</div>
+                <div class="kpi-value">{completadas}</div>
+                <div class="kpi-small">{pct}% de las actividades de hoy</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    with c3:
+    with k3:
+        minutos = 0
+        for item in ruta:
+            for a in buscar_actividades(item["maquina"], f):
+                if a["minutos"] is not None:
+                    minutos += a["minutos"]
+
         st.markdown(
             f"""
-            <div class="kpi">
-                <div class="kpi-value" style="color:#64748B">{total_hechas_semana}</div>
-                <div class="kpi-label">Semana</div>
+            <div class="kpi kpi-orange">
+                <div class="kpi-label">⏱ Tiempo programado</div>
+                <div class="kpi-value">{int(minutos)} min</div>
+                <div class="kpi-small">suma de tiempos del Excel</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with k4:
+        st.markdown(
+            f"""
+            <div class="kpi kpi-purple">
+                <div class="kpi-label">🏭 Máquinas</div>
+                <div class="kpi-value">{len(ruta)}</div>
+                <div class="kpi-small">programadas para {f.strftime('%d/%m/%Y')}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
     st.markdown(
-        "<div class='section-title'>Selecciona una función</div>",
+        """
+        <div class="menu-title">▦ &nbsp; Menú Principal</div>
+        <div class="menu-sub">Accede a las diferentes secciones de la aplicación</div>
+        """,
         unsafe_allow_html=True,
     )
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3, c4 = st.columns(4)
 
+    cards = [
+        (c1, "card-blue", "blue", "📅", "Ruta Diaria",
+         "Las máquinas y horarios salen directamente de HOJA 1 HORARIO.",
+         "ABRIR RUTA", "ruta"),
+        (c2, "card-green", "green", "✓", "Actividades",
+         "Marca cada actividad de la máquina y conserva su tiempo del Excel.",
+         "ABRIR ACTIVIDADES", "actividad"),
+        (c3, "card-orange", "orange", "📊", "Cronograma",
+         "Consulta máquinas, actividades y tiempos programados.",
+         "ABRIR CRONOGRAMA", "cronograma"),
+        (c4, "card-purple", "purple", "◷", "Historial",
+         "Consulta lo que ya fue registrado y exporta los datos.",
+         "ABRIR HISTORIAL", "historial"),
+    ]
+
+    for col, border, icon_cls, icon, title, desc, btn, page in cards:
+        with col:
+            st.markdown(
+                f"""
+                <div class="card {border}">
+                    <div class="card-icon {icon_cls}">{icon}</div>
+                    <div class="card-title">{title}</div>
+                    <div class="card-text">{desc}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(btn, use_container_width=True, type="primary", key=f"home_{page}"):
+                ir(page)
+
+    st.markdown('<div class="footer">💧 &nbsp; La lubricación es vida para tus equipos &nbsp; 💧</div>',
+                unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    c1, c2 = st.columns([1, 2])
     with c1:
-        st.markdown(
-            """
-            <div class="dashboard-card">
-                <h3>📅 Ruta diaria</h3>
-                <p>Registra las máquinas lubricadas, OT, ejecutor,
-                recibido y observaciones.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if st.button(
-            "ABRIR RUTA DIARIA",
-            use_container_width=True,
-            type="primary",
-            key="home_ruta",
-        ):
-            ir("horario")
-
-    with c2:
-        st.markdown(
-            """
-            <div class="dashboard-card">
-                <h3>🔧 Checklists</h3>
-                <p>Ejecuta las actividades por área, bloque y máquina.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if st.button(
-            "ABRIR CHECKLISTS",
-            use_container_width=True,
-            type="primary",
-            key="home_check",
-        ):
-            ir("checklists")
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.markdown(
-            """
-            <div class="dashboard-card">
-                <h3>📊 Cronograma</h3>
-                <p>Consulta el avance de la semana y las actividades
-                realizadas.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if st.button(
-            "VER CRONOGRAMA",
-            use_container_width=True,
-            key="home_crono",
-        ):
-            ir("cronograma")
-
-    with c2:
-        st.markdown(
-            """
-            <div class="dashboard-card">
-                <h3>🕓 Historial</h3>
-                <p>Consulta y descarga los registros guardados por fecha.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if st.button(
-            "VER HISTORIAL",
-            use_container_width=True,
-            key="home_hist",
-        ):
-            ir("historial")
-
-    st.markdown("<div class='info-panel'>", unsafe_allow_html=True)
-    st.markdown("**⚙️ Datos de trabajo**")
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.session_state.fecha_trabajo = st.date_input(
+        nueva_fecha = st.date_input(
             "Fecha de trabajo",
             value=f,
             key="fecha_home",
         )
+        if nueva_fecha != st.session_state.fecha_trabajo:
+            st.session_state.fecha_trabajo = nueva_fecha
+            st.rerun()
 
     with c2:
-        st.session_state.lubricador = st.text_input(
-            "Lubricador / Ejecutor",
-            value=st.session_state.lubricador,
-            key="lub_home",
+        st.text_input(
+            "Lubricador / ejecutor",
+            key="ejecutor",
+            placeholder="Nombre de quien realiza la ruta",
         )
 
     st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
-# ---------------------------------------------------------------------------
-# PANTALLA RUTA DIARIA
-# ---------------------------------------------------------------------------
+# ============================================================
+# RUTA DIARIA
+# ============================================================
 
-def pantalla_horario():
-    global registros, checks
-
-    header_tablet("📅 Registro de ruta diaria", fecha_actual_str())
-    nav_atras("home")
+def ruta_diaria():
+    header()
 
     f = st.session_state.fecha_trabajo
+    dia = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"][f.weekday()]
+    ruta = obtener_ruta_del_dia(f)
 
-    dia_sel = st.selectbox(
-        "Día de la ruta",
-        DIAS_SEMANA,
-        index=min(f.weekday(), 5),
-        key="dia_ruta",
+    st.markdown('<div class="page">', unsafe_allow_html=True)
+
+    if st.button("← INICIO", key="ruta_inicio"):
+        ir("home")
+
+    st.markdown(
+        f"""
+        <div class="panel">
+            <div class="panel-title">📅 Ruta del {dia}</div>
+            <div class="panel-sub">
+                {f.strftime('%d/%m/%Y')} · Las máquinas vienen de HOJA 1 HORARIO.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    info_dia = next(
-        (d for d in horario if d["dia"] == dia_sel),
-        None,
-    )
-
-    if not info_dia or not info_dia["maquinas"]:
-        st.info(f"No hay máquinas programadas para el {dia_sel}.")
+    if not ruta:
+        st.warning("No hay máquinas programadas para este día en el Excel.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    f_str = f.strftime("%Y-%m-%d")
+    for i, item in enumerate(ruta):
+        maquina = item["maquina"]
+        acts = buscar_actividades(maquina, f)
+        minutos = sum(a["minutos"] or 0 for a in acts)
 
-    prev = registros[
-        (registros["fecha"] == f_str)
-        & (registros["dia"] == dia_sel)
-    ]
+        c1, c2, c3, c4 = st.columns([1.5, 2.3, 1, 1])
 
-    filas = []
+        with c1:
+            st.markdown(f"### {item['hora']}")
 
-    for m in info_dia["maquinas"]:
-        fp = prev[
-            prev["maquina"].apply(normalizar)
-            == normalizar(m)
-        ]
+        with c2:
+            st.markdown(f"**🏭 {maquina}**")
+            st.caption(f"{len(acts)} actividades · {int(minutos)} min")
 
-        filas.append(
-            {
-                "Máquina / Equipo": m,
-                "OT": fp["ot"].iloc[0] if len(fp) else "",
-                "Ejecutó": fp["ejecuto"].iloc[0] if len(fp) else "",
-                "Recibió": fp["recibio"].iloc[0] if len(fp) else "",
-                "Observaciones": (
-                    fp["observaciones"].iloc[0]
-                    if len(fp)
-                    else ""
-                ),
-                "✓ Hecho": bool(len(fp)),
-            }
+        with c3:
+            st.markdown(f'<span class="badge">{item["ot"] or "SIN OT"}</span>',
+                        unsafe_allow_html=True)
+
+        with c4:
+            if st.button("INICIAR", key=f"iniciar_{i}_{maquina}", type="primary"):
+                ir("actividad", maquina)
+
+        st.divider()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ============================================================
+# ACTIVIDADES DE UNA MÁQUINA
+# ============================================================
+
+def actividad_maquina():
+    header()
+
+    f = st.session_state.fecha_trabajo
+    maquina = st.session_state.maquina_seleccionada
+
+    if not maquina:
+        ir("ruta")
+
+    acts = buscar_actividades(maquina, f)
+
+    st.markdown('<div class="page">', unsafe_allow_html=True)
+
+    c1, c2 = st.columns([1, 5])
+    with c1:
+        if st.button("← RUTA", key="act_ruta"):
+            ir("ruta")
+    with c2:
+        st.markdown(
+            f"""
+            <div class="panel">
+                <div class="panel-title">🏭 {esc(maquina)}</div>
+                <div class="panel-sub">
+                    {f.strftime('%A %d/%m/%Y')} · {len(acts)} actividades encontradas en el Excel
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-    st.markdown(
-        f"""
-        <div class="section-title">
-            {dia_sel} · {len(filas)} máquinas programadas
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    editado = st.data_editor(
-        pd.DataFrame(filas),
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "OT": st.column_config.TextColumn(
-                "OT",
-                width="small",
-            ),
-            "Ejecutó": st.column_config.TextColumn(
-                "Ejecutó",
-                width="small",
-            ),
-            "Recibió": st.column_config.TextColumn(
-                "Recibió",
-                width="small",
-            ),
-            "Observaciones": st.column_config.TextColumn(
-                "Observaciones",
-                width="large",
-            ),
-            "✓ Hecho": st.column_config.CheckboxColumn(
-                "✓ Hecho",
-            ),
-        },
-        key="editor_ruta",
-    )
-
-    if st.button(
-        "💾 GUARDAR REGISTRO DEL DÍA",
-        type="primary",
-        use_container_width=True,
-        key="save_ruta",
-    ):
-        registros = registros[
-            ~(
-                (registros["fecha"] == f_str)
-                & (registros["dia"] == dia_sel)
-            )
-        ]
-
-        nuevos = [
-            {
-                "fecha": f_str,
-                "dia": dia_sel,
-                "maquina": r["Máquina / Equipo"],
-                "ot": r["OT"],
-                "ejecuto": (
-                    r["Ejecutó"]
-                    or st.session_state.lubricador
-                ),
-                "recibio": r["Recibió"],
-                "observaciones": r["Observaciones"],
-            }
-            for _, r in editado.iterrows()
-            if r["✓ Hecho"]
-        ]
-
-        if nuevos:
-            registros = pd.concat(
-                [registros, pd.DataFrame(nuevos)],
-                ignore_index=True,
-            )
-
-            guardar_datos(registros, checks)
-            st.success(
-                f"✅ Se guardaron {len(nuevos)} registros."
-            )
-            st.rerun()
-        else:
-            st.warning(
-                "Marca al menos una máquina como '✓ Hecho'."
-            )
-
-
-# ---------------------------------------------------------------------------
-# PANTALLA CHECKLISTS
-# ---------------------------------------------------------------------------
-
-def pantalla_checklists():
-    global registros, checks
-
-    header_tablet("🔧 Checklists", fecha_actual_str())
-    nav_atras("home")
-
-    areas = sorted({b["area"] for b in bloques})
-
-    if not areas:
-        st.info("No se encontraron bloques de checklist.")
+    if not acts:
+        st.markdown(
+            """
+            <div class="danger-note">
+                Esta máquina aparece en el horario, pero el Excel no contiene
+                un bloque de actividades identificado para ella.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    area_default = (
-        st.session_state.area_check
-        if st.session_state.area_check in areas
-        else areas[0]
+    # OT de la máquina en el horario.
+    ot = ""
+    for x in obtener_ruta_del_dia(f):
+        if x["maquina"] == maquina:
+            ot = x["ot"]
+            break
+
+    st.text_input("OT", value=ot, key=f"ot_{maquina}")
+    st.text_input("Recibió", key=f"recibio_{maquina}")
+    st.text_area("Observación general", key=f"obs_{maquina}")
+
+    # Leer estados actuales.
+    datos = st.session_state.datos
+    fecha_str = f.strftime("%Y-%m-%d")
+
+    completadas_previas = set()
+    if not datos.empty:
+        filtro = (
+            datos["fecha"].astype(str).eq(fecha_str)
+            & datos["maquina"].astype(str).eq(str(maquina))
+            & datos["estado"].astype(str).eq("Completada")
+        )
+        for _, row in datos[filtro].iterrows():
+            completadas_previas.add(
+                (str(row["hoja"]), str(row["fila_excel"]), str(row["actividad"]))
+            )
+
+    # Marcar todas.
+    key_all = f"all_{fecha_str}_{maquina}"
+    marcar_todas = st.checkbox(
+        "✓ Marcar todas las actividades",
+        value=False,
+        key=key_all,
     )
 
-    area_sel = st.selectbox(
-        "Área",
-        areas,
-        index=areas.index(area_default),
-        key="area_check_select",
-    )
+    seleccionadas = []
 
-    st.session_state.area_check = area_sel
+    for idx, a in enumerate(acts):
+        special = ""
+        texto = a["actividad"]
 
-    bloques_area = [
-        b for b in bloques
-        if b["area"] == area_sel
-    ]
+        if "SOLO DAVIS" in texto.upper():
+            special = "Solo DAVIS"
+        elif "SOLO APLICA TF15" in texto.upper():
+            special = "Solo aplica TF15"
+        elif "SOLO PARA TF41-42" in texto.upper():
+            special = "Solo TF41-42"
+        elif "VIERNES" in texto.upper():
+            special = "Condición: viernes"
 
-    idx = min(
-        st.session_state.bloque_check,
-        len(bloques_area) - 1,
-    )
+        key = f"act_{fecha_str}_{normalizar_maquina(maquina)}_{a['fila_excel']}_{idx}"
 
-    bloque_sel = st.selectbox(
-        "Bloque / Grupo",
-        range(len(bloques_area)),
-        index=idx,
-        format_func=lambda i:
-            f"{bloques_area[i]['titulo']} · "
-            f"{len(bloques_area[i]['maquinas'])} máquinas",
-        key="bloque_check_select",
-    )
+        default = marcar_todas or (
+            str(a["hoja"]), str(a["fila_excel"]), str(a["actividad"])
+        ) in completadas_previas
 
-    st.session_state.bloque_check = bloque_sel
-    bloque = bloques_area[bloque_sel]
+        c1, c2 = st.columns([6, 1])
 
-    st.markdown(
-        f"""
-        <div class="section-title">
-            {area_sel} — {bloque['titulo']}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        with c1:
+            marcado = st.checkbox(
+                texto,
+                value=default,
+                key=key,
+            )
 
-    ejecutor = st.text_input(
-        "Ejecutado por",
-        value=st.session_state.lubricador,
-        key="ejec_check",
-    )
-
-    f_str = st.session_state.fecha_trabajo.strftime(
-        "%Y-%m-%d"
-    )
-
-    prev = checks[
-        (checks["fecha"] == f_str)
-        & (checks["area"] == area_sel)
-        & (checks["bloque"] == bloque["titulo"])
-    ]
-
-    datos = {}
-
-    for act in bloque["actividades"]:
-        fila = []
-
-        for m in bloque["maquinas"]:
-            coinciden = prev[
-                (prev["maquina"].apply(normalizar)
-                 == normalizar(m))
-                & (prev["actividad"] == act["actividad"])
-            ]
-
-            fila.append(
-                bool(
-                    len(coinciden)
-                    and coinciden["ok"].iloc[0]
+        with c2:
+            if a["minutos"] is None:
+                st.markdown('<span class="badge">sin tiempo</span>',
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    f'<div class="activity-time">{int(a["minutos"])} min</div>',
+                    unsafe_allow_html=True,
                 )
-            )
 
-        etiqueta = (
-            f"{act['actividad']}  [{act['tiempo']} min]"
-            if pd.notna(act["tiempo"])
-            else act["actividad"]
-        )
+        if special:
+            st.caption(f"⚠️ {special}")
 
-        datos[etiqueta] = fila
+        if marcado:
+            seleccionadas.append(a)
 
-    df_grid = pd.DataFrame(
-        datos,
-        index=bloque["maquinas"],
-    ).T
+    total = sum(a["minutos"] or 0 for a in seleccionadas)
 
-    config = {
-        "_index": st.column_config.Column(
-            "Actividad",
-            width="large",
-        )
-    }
-
-    for m in bloque["maquinas"]:
-        config[m] = st.column_config.CheckboxColumn(
-            m,
-            width="small",
-        )
-
-    grid = st.data_editor(
-        df_grid.reset_index().rename(
-            columns={"index": "Actividad"}
-        ),
-        hide_index=True,
-        use_container_width=True,
-        column_config=config,
-        key="editor_check",
+    st.markdown(
+        f"""
+        <div class="panel">
+            <div class="panel-title">Resumen</div>
+            <div class="panel-sub">
+                ✓ {len(seleccionadas)} de {len(acts)} actividades seleccionadas
+                &nbsp;&nbsp; | &nbsp;&nbsp;
+                ⏱ {int(total)} minutos
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    hechos = int(
-        grid[bloque["maquinas"]].sum().sum()
-    )
+    if st.button("💾 GUARDAR ACTIVIDADES", type="primary",
+                 use_container_width=True, key=f"guardar_{fecha_str}_{maquina}"):
 
-    total = (
-        len(bloque["actividades"])
-        * len(bloque["maquinas"])
-    )
+        ejecutor = st.session_state.get("ejecutor", "").strip()
+        ot_val = st.session_state.get(f"ot_{maquina}", ot)
+        recibio = st.session_state.get(f"recibio_{maquina}", "")
+        obs = st.session_state.get(f"obs_{maquina}", "")
 
-    st.progress(
-        hechos / total if total else 0,
-        text=f"Avance del bloque: {hechos}/{total}",
-    )
+        seleccion_keys = {
+            (str(a["hoja"]), str(a["fila_excel"]), str(a["actividad"]))
+            for a in seleccionadas
+        }
 
-    if st.button(
-        "💾 GUARDAR CHECKLIST",
-        type="primary",
-        use_container_width=True,
-        key="save_check",
-    ):
-        checks = checks[
-            ~(
-                (checks["fecha"] == f_str)
-                & (checks["area"] == area_sel)
-                & (checks["bloque"] == bloque["titulo"])
-            )
-        ]
+        # Guardamos cada actividad del bloque, completada o pendiente.
+        for a in acts:
+            k = (str(a["hoja"]), str(a["fila_excel"]), str(a["actividad"]))
 
-        nuevos = []
-
-        for _, fila in grid.iterrows():
-            act_nombre = fila["Actividad"].split(
-                "  ["
-            )[0]
-
-            tiempo = next(
-                (
-                    a["tiempo"]
-                    for a in bloque["actividades"]
-                    if a["actividad"] == act_nombre
+            registro = {
+                "fecha": fecha_str,
+                "dia": ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"][f.weekday()],
+                "hora": next(
+                    (x["hora"] for x in obtener_ruta_del_dia(f) if x["maquina"] == maquina),
+                    ""
                 ),
-                None,
-            )
+                "maquina": maquina,
+                "hoja": a["hoja"],
+                "bloque": a["bloque"],
+                "fila_excel": a["fila_excel"],
+                "actividad": a["actividad"],
+                "minutos": a["minutos"],
+                "estado": "Completada" if k in seleccion_keys else "Pendiente",
+                "ejecutor": ejecutor,
+                "ot": ot_val,
+                "recibio": recibio,
+                "observacion": obs,
+                "fecha_hora_guardado": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
 
-            for m in bloque["maquinas"]:
-                if fila[m]:
-                    nuevos.append(
-                        {
-                            "fecha": f_str,
-                            "area": area_sel,
-                            "bloque": bloque["titulo"],
-                            "maquina": m,
-                            "actividad": act_nombre,
-                            "tiempo": tiempo,
-                            "ok": True,
-                            "ejecutado_por": ejecutor,
-                        }
-                    )
+            upsert_actividad(registro)
 
-        if nuevos:
-            checks = pd.concat(
-                [checks, pd.DataFrame(nuevos)],
-                ignore_index=True,
-            )
+        guardar_datos(st.session_state.datos)
 
-            guardar_datos(registros, checks)
-            st.success(
-                f"✅ Checklist guardado: "
-                f"{len(nuevos)} actividades."
-            )
-            st.rerun()
-        else:
-            st.warning(
-                "No marcaste ninguna actividad."
-            )
+        st.success(
+            f"Guardado: {len(seleccionadas)} actividades completadas · "
+            f"{int(total)} minutos."
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-# ---------------------------------------------------------------------------
-# PANTALLA CRONOGRAMA
-# ---------------------------------------------------------------------------
+# ============================================================
+# CRONOGRAMA
+# ============================================================
 
-def pantalla_cronograma():
-    header_tablet(
-        "📊 Cronograma semanal",
-        fecha_actual_str(),
-    )
-    nav_atras("home")
-
+def cronograma():
+    header()
     f = st.session_state.fecha_trabajo
-    lunes = f - timedelta(days=f.weekday())
 
-    fechas_semana = [
-        lunes + timedelta(days=i)
-        for i in range(6)
-    ]
+    st.markdown('<div class="page">', unsafe_allow_html=True)
 
-    hechos_dia = len(
-        registros[
-            registros["fecha"]
-            == f.strftime("%Y-%m-%d")
-        ]
+    if st.button("← INICIO", key="crono_inicio"):
+        ir("home")
+
+    st.markdown(
+        """
+        <div class="panel">
+            <div class="panel-title">📊 Cronograma semanal</div>
+            <div class="panel-sub">
+                Información calculada desde HOJA 1 HORARIO y las hojas de actividades.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    checks_dia = len(
-        checks[
-            checks["fecha"]
-            == f.strftime("%Y-%m-%d")
-        ]
+    dias = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"]
+    resumen = []
+
+    for d_i, dia in enumerate(dias):
+        fecha = f - timedelta(days=f.weekday()) + timedelta(days=d_i)
+        ruta = obtener_ruta_del_dia(fecha)
+
+        maquinas = len(ruta)
+        actividades = 0
+        minutos = 0
+
+        for x in ruta:
+            acts = buscar_actividades(x["maquina"], fecha)
+            actividades += len(acts)
+            minutos += sum(a["minutos"] or 0 for a in acts)
+
+        resumen.append({
+            "Día": dia,
+            "Fecha": fecha.strftime("%d/%m/%Y"),
+            "Máquinas": maquinas,
+            "Actividades": actividades,
+            "Minutos": int(minutos),
+        })
+
+    st.dataframe(
+        pd.DataFrame(resumen),
+        use_container_width=True,
+        hide_index=True,
     )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ============================================================
+# HISTORIAL
+# ============================================================
+
+def historial():
+    header()
+
+    st.markdown('<div class="page">', unsafe_allow_html=True)
+
+    if st.button("← INICIO", key="hist_inicio"):
+        ir("home")
+
+    st.markdown(
+        """
+        <div class="panel">
+            <div class="panel-title">◷ Historial</div>
+            <div class="panel-sub">
+                Registros guardados por actividad.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    df = st.session_state.datos.copy()
+
+    if df.empty:
+        st.info("Todavía no hay actividades guardadas.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
     c1, c2, c3 = st.columns(3)
 
-    c1.metric("Registros hoy", hechos_dia)
-    c2.metric("Checklist hoy", checks_dia)
-    c3.metric(
-        "Semana",
-        f"{lunes.strftime('%d/%m')} – "
-        f"{(lunes + timedelta(days=5)).strftime('%d/%m')}",
-    )
+    with c1:
+        fecha_filtro = st.date_input(
+            "Fecha",
+            value=st.session_state.fecha_trabajo,
+            key="hist_fecha",
+        )
 
-    filas_crono = []
+    with c2:
+        maquinas = ["Todas"] + sorted(df["maquina"].dropna().astype(str).unique().tolist())
+        maq = st.selectbox("Máquina", maquinas, key="hist_maquina")
 
-    for d in horario:
-        fila = {"Día": d["dia"]}
+    with c3:
+        estados = ["Todos", "Completada", "Pendiente"]
+        estado = st.selectbox("Estado", estados, key="hist_estado")
 
-        for fecha in fechas_semana:
-            if (
-                fecha.strftime("%A")
-                != dia_a_ingles(d["dia"])
-            ):
-                continue
+    filtro = df.copy()
+    filtro = filtro[filtro["fecha"].astype(str) == fecha_filtro.strftime("%Y-%m-%d")]
 
-            fs = fecha.strftime("%Y-%m-%d")
-            regs_dia = registros[
-                registros["fecha"] == fs
+    if maq != "Todas":
+        filtro = filtro[filtro["maquina"].astype(str) == maq]
+
+    if estado != "Todos":
+        filtro = filtro[filtro["estado"].astype(str) == estado]
+
+    st.dataframe(
+        filtro[
+            [
+                "fecha", "dia", "hora", "maquina", "actividad",
+                "minutos", "estado", "ejecutor", "ot", "recibio", "observacion"
             ]
-
-            hechas = sum(
-                1
-                for m in d["maquinas"]
-                if len(
-                    regs_dia[
-                        regs_dia["maquina"].apply(
-                            normalizar
-                        )
-                        == normalizar(m)
-                    ]
-                )
-            )
-
-            pct = (
-                hechas / len(d["maquinas"])
-                if d["maquinas"]
-                else 0
-            )
-
-            fila[
-                fecha.strftime("%d/%m")
-            ] = (
-                f"{'🟢' if pct == 1 else '🟡' if pct > 0 else '⚪'} "
-                f"{hechas}/{len(d['maquinas'])}"
-            )
-
-        filas_crono.append(fila)
-
-    st.dataframe(
-        pd.DataFrame(filas_crono).set_index("Día"),
-        use_container_width=True,
-    )
-
-    st.markdown(
-        "<div class='section-title'>Actividades por área</div>",
-        unsafe_allow_html=True,
-    )
-
-    if len(checks):
-        resumen = (
-            checks.groupby(
-                ["fecha", "area"]
-            )
-            .size()
-            .unstack(fill_value=0)
-            .reindex(
-                [
-                    x.strftime("%Y-%m-%d")
-                    for x in fechas_semana
-                ],
-                fill_value=0,
-            )
-        )
-
-        resumen.index = [
-            x.strftime("%a %d/%m")
-            for x in fechas_semana
-        ]
-
-        st.dataframe(
-            resumen,
-            use_container_width=True,
-        )
-    else:
-        st.info(
-            "Aún no hay checklists registrados."
-        )
-
-
-# ---------------------------------------------------------------------------
-# PANTALLA HISTORIAL
-# ---------------------------------------------------------------------------
-
-def pantalla_historial():
-    header_tablet(
-        "🕓 Historial de registros",
-        fecha_actual_str(),
-    )
-    nav_atras("home")
-
-    if not len(registros) and not len(checks):
-        st.info(
-            "Todavía no hay registros guardados."
-        )
-        return
-
-    tipo = st.radio(
-        "Ver historial de",
-        ["Ruta (horario)", "Checklists"],
-        horizontal=True,
-        key="hist_tipo",
-    )
-
-    df_hist = (
-        registros
-        if tipo == "Ruta (horario)"
-        else checks
-    )
-
-    if not len(df_hist):
-        st.info(
-            f"No hay registros de {tipo.lower()} todavía."
-        )
-        return
-
-    c1, c2 = st.columns(2)
-
-    fechas_hist = sorted(
-        df_hist["fecha"].unique()
-    )
-
-    f_ini = c1.selectbox(
-        "Desde",
-        fechas_hist,
-        index=0,
-        key="hist_ini",
-    )
-
-    f_fin = c2.selectbox(
-        "Hasta",
-        fechas_hist,
-        index=len(fechas_hist) - 1,
-        key="hist_fin",
-    )
-
-    filtrado = df_hist[
-        (df_hist["fecha"] >= f_ini)
-        & (df_hist["fecha"] <= f_fin)
-    ]
-
-    st.dataframe(
-        filtrado,
+        ],
         use_container_width=True,
         hide_index=True,
     )
 
+    excel_bytes = None
+    import io
+    buffer = io.BytesIO()
+    filtro.to_excel(buffer, index=False)
+    excel_bytes = buffer.getvalue()
+
     st.download_button(
-        "⬇️ DESCARGAR HISTORIAL (EXCEL)",
-        data=to_excel_bytes(filtrado),
-        file_name=(
-            f"historial_"
-            f"{tipo.split()[0].lower()}_"
-            f"{f_ini}_{f_fin}.xlsx"
-        ),
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        ),
+        "⬇️ Descargar historial en Excel",
+        data=excel_bytes,
+        file_name=f"historial_lubricacion_{fecha_filtro.strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
 
+    st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------------------------
-# ENRUTADOR
-# ---------------------------------------------------------------------------
 
-PANTALLAS = {
-    "home": pantalla_home,
-    "horario": pantalla_horario,
-    "checklists": pantalla_checklists,
-    "cronograma": pantalla_cronograma,
-    "historial": pantalla_historial,
-}
+# ============================================================
+# ENRUTAMIENTO
+# ============================================================
 
-PANTALLAS.get(
-    st.session_state.pagina,
-    pantalla_home,
-)()
+if st.session_state.pagina == "home":
+    home()
+elif st.session_state.pagina == "ruta":
+    ruta_diaria()
+elif st.session_state.pagina == "actividad":
+    actividad_maquina()
+elif st.session_state.pagina == "cronograma":
+    cronograma()
+elif st.session_state.pagina == "historial":
+    historial()
+else:
+    home()
