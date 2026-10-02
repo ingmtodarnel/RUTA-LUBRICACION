@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+
 """
 RUTA DE LUBRICACIÓN - Dashboard oscuro
 Basado directamente en:
@@ -35,7 +35,48 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-ARCHIVO_RUTA = BASE_DIR / "RUTA LUB V2 OCT 2026(1).xlsx"
+
+# ============================================================
+# ARCHIVO EXCEL MAESTRO
+# ============================================================
+# En tu repositorio el archivo aparece como:
+#     ruta_lub_v2_oct_2026.xlsx
+#
+# Linux/GitHub distingue mayúsculas y minúsculas, por eso aquí
+# se busca exactamente ese nombre y también algunas variantes.
+CANDIDATOS_EXCEL = [
+    BASE_DIR / "ruta_lub_v2_oct_2026.xlsx",
+    BASE_DIR / "ruta_lub_v2_oct_2026.xlsm",
+    BASE_DIR / "RUTA LUB V2 OCT 2026(1).xlsx",
+    BASE_DIR / "RUTA LUB V2 OCT 2026.xlsx",
+]
+
+# También busca en la carpeta desde donde se ejecuta Streamlit y
+# en la carpeta del proyecto. Esto evita problemas si app.py se
+# mueve dentro de una subcarpeta.
+CANDIDATOS_EXCEL += [
+    Path.cwd() / "ruta_lub_v2_oct_2026.xlsx",
+    Path.cwd() / "RUTA LUB V2 OCT 2026(1).xlsx",
+    Path.cwd() / "RUTA LUB V2 OCT 2026.xlsx",
+]
+
+ARCHIVO_RUTA = next((p for p in CANDIDATOS_EXCEL if p.exists()), None)
+
+# Último intento: cualquier Excel de la carpeta que no sea el archivo
+# de datos generado por la aplicación.
+if ARCHIVO_RUTA is None:
+    posibles = []
+    for carpeta in {BASE_DIR, Path.cwd()}:
+        if carpeta.exists():
+            posibles.extend(carpeta.glob("*.xlsx"))
+    posibles = [
+        p for p in posibles
+        if p.name.lower() != "datos_ruta_lub.xlsx"
+        and not p.name.startswith("~$")
+    ]
+    if posibles:
+        ARCHIVO_RUTA = posibles[0]
+
 ARCHIVO_DATOS = BASE_DIR / "datos_ruta_lub.xlsx"
 
 
@@ -588,16 +629,46 @@ def leer_excel_maestro(ruta):
 
 
 def cargar_maestro():
-    if not ARCHIVO_RUTA.exists():
-        st.error(
-            f"No encuentro el Excel maestro:\n\n`{ARCHIVO_RUTA.name}`\n\n"
-            "Ponlo en la misma carpeta que este programa."
+    global ARCHIVO_RUTA
+
+    if ARCHIVO_RUTA is None:
+        st.error("No se encontró el Excel maestro.")
+        st.markdown(
+            f"""
+            **La aplicación está buscando el archivo:**
+
+            `ruta_lub_v2_oct_2026.xlsx`
+
+            **Carpeta de app.py:**  
+            `{BASE_DIR}`
+
+            **Carpeta de ejecución:**  
+            `{Path.cwd()}`
+            """
         )
-        st.stop()
+
+        archivo_subido = st.file_uploader(
+            "Selecciona el Excel maestro",
+            type=["xlsx", "xlsm"],
+            key="excel_maestro_upload",
+        )
+
+        if archivo_subido is None:
+            st.stop()
+
+        destino = BASE_DIR / "_excel_maestro_subido.xlsx"
+        destino.write_bytes(archivo_subido.getbuffer())
+        ARCHIVO_RUTA = destino
+
     return leer_excel_maestro(str(ARCHIVO_RUTA))
 
 
 HORARIO, ACTIVIDADES = cargar_maestro()
+
+# Diagnóstico discreto: permite comprobar en Streamlit qué Excel fue cargado.
+if ARCHIVO_RUTA is not None:
+    st.session_state["_excel_cargado"] = ARCHIVO_RUTA.name
+
 
 
 # ============================================================
