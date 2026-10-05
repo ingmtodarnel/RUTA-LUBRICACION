@@ -1,4 +1,4 @@
-
+# -*- coding: utf-8 -*-
 """
 RUTA DE LUBRICACIÓN - Dashboard oscuro
 Basado directamente en:
@@ -506,7 +506,9 @@ def frecuencia_permite(texto, maquina, fecha):
 # ============================================================
 
 @st.cache_data(show_spinner=False)
-def leer_excel_maestro(ruta):
+def leer_excel_maestro(ruta, version_archivo):
+    # version_archivo invalida la caché cuando el Excel cambia aunque conserve
+    # el mismo nombre.
     wb = load_workbook(ruta, data_only=True)
 
     # ---------- HORARIO ----------
@@ -514,14 +516,17 @@ def leer_excel_maestro(ruta):
 
     horario = []
 
-    # Lunes, martes, miércoles: filas 5-16
+    # HOJA 1 HORARIO usa Excel 1-based:
+    # Lunes=B/OT=C, Martes=F/OT=G, Miércoles=J/OT=K.
+    # Jueves=B/OT=C, Viernes=F/OT=G, Sábado=J/OT=K.
+    # La columna A contiene la hora solo en el bloque lunes-miércoles.
     grupos = [
-        ("Lunes", 5, 16, 1, 2),
-        ("Martes", 5, 16, 5, 6),
-        ("Miércoles", 5, 16, 9, 10),
-        ("Jueves", 22, 40, 1, 2),
-        ("Viernes", 22, 40, 5, 6),
-        ("Sábado", 22, 40, 9, 10),
+        ("Lunes", 5, 16, 2, 3),
+        ("Martes", 5, 16, 6, 7),
+        ("Miércoles", 5, 16, 10, 11),
+        ("Jueves", 22, 40, 2, 3),
+        ("Viernes", 22, 40, 6, 7),
+        ("Sábado", 22, 40, 10, 11),
     ]
 
     for dia, r1, r2, col_maquina, col_ot in grupos:
@@ -660,7 +665,8 @@ def cargar_maestro():
         destino.write_bytes(archivo_subido.getbuffer())
         ARCHIVO_RUTA = destino
 
-    return leer_excel_maestro(str(ARCHIVO_RUTA))
+    version_archivo = ARCHIVO_RUTA.stat().st_mtime_ns if ARCHIVO_RUTA.exists() else 0
+    return leer_excel_maestro(str(ARCHIVO_RUTA), version_archivo)
 
 
 HORARIO, ACTIVIDADES = cargar_maestro()
@@ -668,6 +674,15 @@ HORARIO, ACTIVIDADES = cargar_maestro()
 # Diagnóstico discreto: permite comprobar en Streamlit qué Excel fue cargado.
 if ARCHIVO_RUTA is not None:
     st.session_state["_excel_cargado"] = ARCHIVO_RUTA.name
+
+# Diagnóstico visible para comprobar que la app está usando el Excel maestro.
+with st.expander("🔎 Excel maestro cargado", expanded=False):
+    st.write(f"**Archivo:** {ARCHIVO_RUTA.name if ARCHIVO_RUTA else 'No encontrado'}")
+    if ARCHIVO_RUTA is not None:
+        st.write(f"**Ruta:** `{ARCHIVO_RUTA}`")
+        st.write(f"**Máquinas en HOJA 1 HORARIO:** {len(HORARIO)}")
+        st.write(f"**Actividades leídas:** {len(ACTIVIDADES)}")
+        st.write("**Hojas esperadas:** HOJA 1 HORARIO, EXTRUSION, TF ESPUMADOS, TF PRESION, TF RIG, ML Periferico")
 
 
 
