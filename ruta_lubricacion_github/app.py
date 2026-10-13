@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 RUTA DE LUBRICACIÓN - Dashboard oscuro
@@ -642,36 +641,23 @@ def leer_excel_maestro(ruta, version_archivo):
 
 
 def cargar_maestro():
+    """Carga el Excel maestro definido por el administrador.
+
+    No se permite reemplazar/subir el horario maestro desde la interfaz,
+    para que los usuarios de la aplicación no puedan cambiar la programación.
+    """
     global ARCHIVO_RUTA
 
     if ARCHIVO_RUTA is None:
-        st.error("No se encontró el Excel maestro.")
-        st.markdown(
-            f"""
-            **La aplicación está buscando el archivo:**
-
-            `ruta_lub_v2_oct_2026.xlsx`
-
-            **Carpeta de app.py:**  
-            `{BASE_DIR}`
-
-            **Carpeta de ejecución:**  
-            `{Path.cwd()}`
-            """
+        st.error("No se encontró el Excel maestro de la ruta de lubricación.")
+        st.warning(
+            "La carga o sustitución del Excel maestro está deshabilitada para los usuarios. "
+            "Un administrador debe colocar el archivo aprobado en la carpeta de la aplicación."
         )
-
-        archivo_subido = st.file_uploader(
-            "Selecciona el Excel maestro",
-            type=["xlsx", "xlsm"],
-            key="excel_maestro_upload",
+        st.caption(
+            f"Archivo esperado: RUTA LUB V2 OCT 2026.xlsx · Carpeta de la aplicación: {BASE_DIR}"
         )
-
-        if archivo_subido is None:
-            st.stop()
-
-        destino = BASE_DIR / "_excel_maestro_subido.xlsx"
-        destino.write_bytes(archivo_subido.getbuffer())
-        ARCHIVO_RUTA = destino
+        st.stop()
 
     version_archivo = ARCHIVO_RUTA.stat().st_mtime_ns if ARCHIVO_RUTA.exists() else 0
     return leer_excel_maestro(str(ARCHIVO_RUTA), version_archivo)
@@ -1310,6 +1296,8 @@ def actividad_maquina():
 def cronograma():
     header()
     f = st.session_state.fecha_trabajo
+    lunes = f - timedelta(days=f.weekday())
+    sabado = lunes + timedelta(days=5)
 
     st.markdown('<div class="page">', unsafe_allow_html=True)
 
@@ -1317,46 +1305,212 @@ def cronograma():
         ir("home")
 
     st.markdown(
-        """
+        f"""
         <div class="panel">
-            <div class="panel-title">📊 Cronograma semanal</div>
-            <div class="panel-sub">
-                Información calculada desde HOJA 1 HORARIO y las hojas de actividades.
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
+                <div>
+                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                        <div class="panel-title">📊 Cronograma semanal</div>
+                        <span class="crono-readonly">🔒 SOLO LECTURA</span>
+                    </div>
+                    <div class="panel-sub">
+                        Planificación protegida para consulta: no se puede editar ni reemplazar el horario desde esta pantalla.
+                    </div>
+                </div>
+                <div style="text-align:right;">
+                    <div class="badge">SEMANA {f.isocalendar().week}</div>
+                    <div style="color:#8dccff;font-size:13px;margin-top:7px;">
+                        {lunes.strftime('%d/%m/%Y')} – {sabado.strftime('%d/%m/%Y')}
+                    </div>
+                </div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    dias = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"]
+    # Estilos exclusivos de esta vista: no cambian el resto de la aplicación.
+    st.markdown(
+        """
+        <style>
+        .crono-kpi {
+            background:linear-gradient(145deg,#0a1b2b,#07111b);
+            border:1px solid #1a3a54;
+            border-radius:15px;
+            padding:16px 18px;
+            min-height:124px;
+            box-shadow:0 7px 18px rgba(0,0,0,.16);
+        }
+        .crono-kpi-label { color:#9ec8e8;font-size:12px;font-weight:800;letter-spacing:.5px;text-transform:uppercase; }
+        .crono-kpi-value { color:#f5faff;font-size:29px;font-weight:900;margin-top:8px;line-height:1.15; }
+        .crono-kpi-note { color:#7899b5;font-size:12px;margin-top:6px; }
+        .crono-day-card {
+            background:linear-gradient(150deg,#091827,#060e17);
+            border:1px solid #1a3851;
+            border-radius:15px;
+            padding:16px;
+            margin-bottom:13px;
+            min-height:205px;
+        }
+        .crono-day-title { color:#f5f9ff;font-size:18px;font-weight:900; }
+        .crono-day-date { color:#82bde8;font-size:12px;margin-top:3px; }
+        .crono-day-time { color:#ffffff;font-size:24px;font-weight:900;margin-top:14px; }
+        .crono-day-stats { color:#a4bed3;font-size:12px;margin-top:8px;line-height:1.8; }
+        .crono-bar-track { height:7px;background:#14283a;border-radius:9px;overflow:hidden;margin-top:13px; }
+        .crono-bar-fill { height:7px;background:linear-gradient(90deg,#087de9,#25c6f7);border-radius:9px; }
+        .crono-section-title { color:#f5f9ff;font-size:18px;font-weight:900;margin:15px 0 10px; }
+        .crono-readonly {
+            display:inline-block;
+            color:#bdebd5;
+            background:#0b3028;
+            border:1px solid #176c55;
+            border-radius:999px;
+            padding:5px 11px;
+            font-size:12px;
+            font-weight:900;
+            letter-spacing:.4px;
+            white-space:nowrap;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    nombres_dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"]
     resumen = []
 
-    for d_i, dia in enumerate(dias):
-        fecha = f - timedelta(days=f.weekday()) + timedelta(days=d_i)
+    for desplazamiento, dia in enumerate(nombres_dias):
+        fecha = lunes + timedelta(days=desplazamiento)
         ruta = obtener_ruta_del_dia(fecha)
+        actividades_dia = 0
+        minutos_dia = 0
 
-        maquinas = len(ruta)
-        actividades = 0
-        minutos = 0
-
-        for x in ruta:
-            acts = buscar_actividades(x["maquina"], fecha)
-            actividades += len(acts)
-            minutos += sum(a["minutos"] or 0 for a in acts)
+        for item in ruta:
+            acts = buscar_actividades(item["maquina"], fecha)
+            actividades_dia += len(acts)
+            minutos_dia += sum(a["minutos"] or 0 for a in acts)
 
         resumen.append({
-            "Día": dia,
-            "Fecha": fecha.strftime("%d/%m/%Y"),
-            "Máquinas": maquinas,
-            "Actividades": actividades,
-            "Minutos": int(minutos),
+            "dia": dia,
+            "fecha": fecha,
+            "ruta": ruta,
+            "maquinas": len(ruta),
+            "actividades": actividades_dia,
+            "minutos": int(minutos_dia),
         })
 
-    st.dataframe(
-        pd.DataFrame(resumen),
-        use_container_width=True,
-        hide_index=True,
-    )
+    total_asignaciones = sum(d["maquinas"] for d in resumen)
+    total_actividades = sum(d["actividades"] for d in resumen)
+    total_minutos = sum(d["minutos"] for d in resumen)
+    dias_programados = sum(1 for d in resumen if d["maquinas"] > 0)
+    total_horas, minutos_restantes = divmod(total_minutos, 60)
+    max_actividades_dia = max((d["actividades"] for d in resumen), default=0)
+
+    st.markdown('<div class="crono-section-title">Resumen de la semana</div>', unsafe_allow_html=True)
+    k1, k2, k3, k4 = st.columns(4)
+    kpis = [
+        (k1, "Asignaciones de máquina", f"{total_asignaciones}", "Suma de máquinas programadas por día"),
+        (k2, "Actividades previstas", f"{total_actividades}", "Según las hojas de actividades del Excel"),
+        (k3, "Tiempo estimado", f"{total_horas} h {minutos_restantes:02d} min", f"{total_minutos:,} minutos en total".replace(",", ".")),
+        (k4, "Días con programación", f"{dias_programados} de 6", "Lunes a sábado"),
+    ]
+    for col, etiqueta, valor, nota in kpis:
+        with col:
+            st.markdown(
+                f"""
+                <div class="crono-kpi">
+                    <div class="crono-kpi-label">{etiqueta}</div>
+                    <div class="crono-kpi-value">{valor}</div>
+                    <div class="crono-kpi-note">{nota}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown('<div class="crono-section-title">Carga programada por día</div>', unsafe_allow_html=True)
+    st.caption("La barra compara el número de actividades de cada día con el día más cargado de esta semana.")
+
+    # Dos filas de tres tarjetas: lectura rápida en computador y tablet.
+    for inicio in (0, 3):
+        columnas = st.columns(3)
+        for indice, dia_info in enumerate(resumen[inicio:inicio + 3]):
+            with columnas[indice]:
+                porcentaje = round(dia_info["actividades"] / max_actividades_dia * 100) if max_actividades_dia else 0
+                horas_dia, mins_dia = divmod(dia_info["minutos"], 60)
+                st.markdown(
+                    f"""
+                    <div class="crono-day-card">
+                        <div class="crono-day-title">{dia_info['dia']}</div>
+                        <div class="crono-day-date">{dia_info['fecha'].strftime('%d/%m/%Y')}</div>
+                        <div class="crono-day-time">{horas_dia} h {mins_dia:02d} min</div>
+                        <div class="crono-day-stats">
+                            🏭 <b>{dia_info['maquinas']}</b> máquinas programadas<br>
+                            📋 <b>{dia_info['actividades']}</b> actividades previstas<br>
+                            ⏱️ <b>{dia_info['minutos']}</b> minutos estimados
+                        </div>
+                        <div class="crono-bar-track"><div class="crono-bar-fill" style="width:{porcentaje}%;"></div></div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    st.markdown('<div class="crono-section-title">Detalle del cronograma</div>', unsafe_allow_html=True)
+    st.caption("Abre cada día para consultar el horario y las actividades. Las tablas son de solo lectura y no guardan cambios en el cronograma.")
+
+    for dia_info in resumen:
+        etiqueta = (
+            f"📅 {dia_info['dia']} · {dia_info['fecha'].strftime('%d/%m/%Y')}"
+            f"  —  {dia_info['maquinas']} máquinas · {dia_info['actividades']} actividades · {dia_info['minutos']} min"
+        )
+        with st.expander(etiqueta, expanded=False):
+            if not dia_info["ruta"]:
+                st.info("No hay máquinas programadas para este día en el Excel.")
+                continue
+
+            filas_detalle = []
+            for item in dia_info["ruta"]:
+                acts = buscar_actividades(item["maquina"], dia_info["fecha"])
+                minutos_maquina = int(sum(a["minutos"] or 0 for a in acts))
+                horas_maquina, mins_maquina = divmod(minutos_maquina, 60)
+                filas_detalle.append({
+                    "Horario": item.get("hora", ""),
+                    "Máquina": item["maquina"],
+                    "OT": item.get("ot") or "Sin OT",
+                    "Actividades": len(acts),
+                    "Minutos": minutos_maquina,
+                    "Duración estimada": f"{horas_maquina} h {mins_maquina:02d} min",
+                })
+
+            st.dataframe(
+                pd.DataFrame(filas_detalle),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            maquinas_dia = [str(item["maquina"]) for item in dia_info["ruta"]]
+            maquina_detalle = st.selectbox(
+                "Consultar actividades de una máquina",
+                maquinas_dia,
+                key=f"crono_maquina_{dia_info['fecha'].isoformat()}",
+            )
+            actividades_maquina = buscar_actividades(maquina_detalle, dia_info["fecha"])
+            if actividades_maquina:
+                filas_actividades = []
+                for actividad in actividades_maquina:
+                    valor_minutos = actividad["minutos"]
+                    filas_actividades.append({
+                        "Actividad": actividad["actividad"],
+                        "Tiempo (min)": int(valor_minutos) if valor_minutos is not None else "—",
+                        "Hoja de Excel": actividad["hoja"],
+                    })
+                st.markdown(f"**Actividades previstas para {maquina_detalle}**")
+                st.dataframe(
+                    pd.DataFrame(filas_actividades),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info(f"No se encontraron actividades vinculadas a {maquina_detalle} para este día.")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
