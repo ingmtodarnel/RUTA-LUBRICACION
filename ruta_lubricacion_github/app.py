@@ -1,4 +1,4 @@
-
+# -*- coding: utf-8 -*-
 """
 RUTA DE LUBRICACIÓN - Dashboard oscuro
 Basado directamente en:
@@ -455,6 +455,12 @@ def maquina_equivalente(maquina):
         "TF02": "TF02",
         "TF03": "TF03",
         "MP": "MP",
+        # La hoja ML Periferico usa un encabezado compartido de Sistema de
+        # Transporte para S.T RIG y S.T ESP.
+        "S.TRIG": "SISTTRANSPORTE",
+        "S.TESP": "SISTTRANSPORTE",
+        "STRIG": "SISTTRANSPORTE",
+        "STESP": "SISTTRANSPORTE",
         # En HOJA 1 HORARIO las máquinas se llaman TAN; sus actividades
         # están en el segundo bloque de EXTRUSION con encabezados EE01, etc.
         # El Excel usa el número cero: EE01, EE02... (no la letra O).
@@ -615,10 +621,11 @@ def leer_excel_maestro(ruta, version_archivo):
     leer_bloque("TF RIG", 4, 5, 17)
     leer_bloque("TF RIG", 21, 22, 34)
 
-    # ML PERIFERICO: conserva el bloque genérico de MP y además reconoce
-    # por separado las columnas EL11 y EL14 que aparecen en la fila 3.
-    # En esta hoja las columnas identifican a qué máquina aplica cada tarea;
-    # los valores de las celdas pueden estar vacíos (formato de checklist).
+    # ML PERIFERICO: se lee con la misma regla que los demás cuadros.
+    # La lista de actividades está en la columna A, el tiempo en la B y los
+    # encabezados de máquina en la fila 3. Todas las actividades del cuadro
+    # corresponden a cada máquina cuyo nombre aparece en ese encabezado;
+    # no se exige una X en las celdas interiores.
     ws = wb["ML Periferico"]
     for r in range(4, ws.max_row + 1):
         actividad = ws.cell(r, 1).value
@@ -632,7 +639,7 @@ def leer_excel_maestro(ruta, version_archivo):
 
         actividad_txt = str(actividad).strip()
 
-        # Se mantiene el bloque general existente para MP los sábados.
+        # Compatibilidad con el registro especial MP que ya existía.
         actividades.append({
             "hoja": "ML Periferico",
             "bloque": "ML Periferico / sábado quincenal",
@@ -640,22 +647,36 @@ def leer_excel_maestro(ruta, version_archivo):
             "actividad": actividad_txt,
             "minutos": minutos,
             "fila_excel": r,
+            "dia_permitido": 5,
         })
 
-        # EL11 y EL14 tienen columnas independientes en esta hoja: no se
-        # debe reutilizar para EL14 toda la lista principal de EL11.
+        # Relacionar la actividad con cada máquina escrita en el encabezado.
         for c in range(3, ws.max_column + 1):
             encabezado = ws.cell(3, c).value
-            encabezado_norm = normalizar_maquina(encabezado)
-            if encabezado_norm in {"EL11", "EL14"}:
-                actividades.append({
-                    "hoja": "ML Periferico",
-                    "bloque": f"ML Periferico / {encabezado_norm}",
-                    "maquina_columna": encabezado_norm,
-                    "actividad": actividad_txt,
-                    "minutos": minutos,
-                    "fila_excel": r,
-                })
+            if encabezado is None or not str(encabezado).strip():
+                continue
+            encabezado_texto = str(encabezado).strip()
+            encabezado_norm = normalizar_maquina(encabezado_texto)
+            alias_encabezado = {
+                "SISTTRANSPORTE": "SISTTRANSPORTE",
+                "TF22SAB": "TF22+ML",
+                "TF23SAB": "TF23+ML",
+                "41VIERNES": "TF41",
+                "42VIERNES": "TF42",
+            }
+            maquina_columna = alias_encabezado.get(encabezado_norm, encabezado_norm)
+            # Los encabezados expresamente identificados como viernes se
+            # muestran el viernes; el resto del cuadro pertenece al sábado.
+            dia_permitido = 4 if "VIERNES" in encabezado_texto.upper() else 5
+            actividades.append({
+                "hoja": "ML Periferico",
+                "bloque": f"ML Periferico / {maquina_columna}",
+                "maquina_columna": maquina_columna,
+                "actividad": actividad_txt,
+                "minutos": minutos,
+                "fila_excel": r,
+                "dia_permitido": dia_permitido,
+            })
 
     return horario, actividades
 
@@ -808,35 +829,41 @@ def buscar_actividades(maquina, fecha):
 
     for a in ACTIVIDADES:
         if a["hoja"] == "ML Periferico":
-            # Las tareas de esta hoja son del sábado/quincenales y las
-            # columnas EL11/EL14 solo se aplican a su propia máquina.
-            if m not in {"EL11", "EL14"} or fecha.weekday() != 5:
+            # Respetar el día indicado por el encabezado. Las columnas
+            # 41 Viernes/42 Viernes corresponden al viernes; el resto,
+            # al cuadro sabatino. La asignación no depende de celdas marcadas.
+            dia_permitido = a.get("dia_permitido", 5)
+            if fecha.weekday() != dia_permitido:
+                continue
+            if a["maquina_columna"] == "ESPECIAL_ML" and m != "MP":
+                continue
+            if a["maquina_columna"] != "ESPECIAL_ML" and m == "MP":
                 continue
 
         col = normalizar_maquina(a["maquina_columna"])
         mm = normalizar_maquina(m)
 
-        # Coincidencia directa con el encabezado de la hoja.
-        coincide = col == mm
-
-        # El Excel menciona explícitamente una actividad compartida por EL11
-        # y EL14, aunque en EXTRUSION solo exista la columna EL11.
-        if (
-            not coincide
-            and mm == "EL14"
-            and a["hoja"] == "EXTRUSION"
-            and re.search(r"EL11\s*-\s*EL14", str(a["actividad"]).upper())
-        ):
-            coincide = True
+        # EL14 debe llevar exactamente la misma ruta base de EXTRUSION
+        # que EL11. En esa hoja se toma como fuente la columna EL11, incluso
+        # si en el futuro alguien añade otra columna EL14, para evitar sumar
+        # actividades diferentes y romper la equivalencia solicitada.
+        if a["hoja"] == "EXTRUSION" and mm == "EL14":
+            coincide = col == "EL11"
+        else:
+            # En el resto de las hojas se usa la coincidencia normal.
+            coincide = col == mm
 
         # El horario TF07 usa una columna TF06/07.
         if not coincide and mm == "TF07" and col == "TF06/07":
             coincide = True
 
-        # TF22 y TF23 están en el bloque sabatino de TF RIG.
-        if not coincide and mm == "TF22ML" and col == "TF22+ML":
+        # TF22 y TF23 pueden aparecer como TF22/TF23 o con el sufijo ML.
+        if not coincide and mm in {"TF22", "TF22ML", "TF22+ML"} and col == "TF22+ML":
             coincide = True
-        if not coincide and mm == "TF23ML" and col == "TF23+ML":
+        if not coincide and mm in {"TF23", "TF23ML", "TF23+ML"} and col == "TF23+ML":
+            coincide = True
+        # Ambas máquinas de Sistema de Transporte comparten ese encabezado.
+        if not coincide and mm in {"SISTTRANSPORTE", "STRIG", "STESP", "S.TRIG", "S.TESP"} and col == "SISTTRANSPORTE":
             coincide = True
 
         # TF20 aparece en ambos bloques de TF RIG. Se conserva el bloque
