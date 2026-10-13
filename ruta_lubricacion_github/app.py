@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """
 RUTA DE LUBRICACIÓN - Dashboard oscuro
@@ -45,6 +46,9 @@ BASE_DIR = Path(__file__).resolve().parent
 # Linux/GitHub distingue mayúsculas y minúsculas, por eso aquí
 # se busca exactamente ese nombre y también algunas variantes.
 CANDIDATOS_EXCEL = [
+    # Excel actualizado que acabas de compartir.
+    BASE_DIR / "RUTA LUB V2 OCT 2026(2).xlsx",
+    # Nombre que ya usa tu repositorio de GitHub.
     BASE_DIR / "ruta_lub_v2_oct_2026.xlsx",
     BASE_DIR / "ruta_lub_v2_oct_2026.xlsm",
     BASE_DIR / "RUTA LUB V2 OCT 2026(1).xlsx",
@@ -55,6 +59,7 @@ CANDIDATOS_EXCEL = [
 # en la carpeta del proyecto. Esto evita problemas si app.py se
 # mueve dentro de una subcarpeta.
 CANDIDATOS_EXCEL += [
+    Path.cwd() / "RUTA LUB V2 OCT 2026(2).xlsx",
     Path.cwd() / "ruta_lub_v2_oct_2026.xlsx",
     Path.cwd() / "RUTA LUB V2 OCT 2026(1).xlsx",
     Path.cwd() / "RUTA LUB V2 OCT 2026.xlsx",
@@ -451,11 +456,14 @@ def maquina_equivalente(maquina):
         "TF02": "TF02",
         "TF03": "TF03",
         "MP": "MP",
-        "TAN1": "TAN1",
-        "TAN2": "TAN2",
-        "TAN3": "TAN3",
-        "TAN4": "TAN4",
-        "TAN6": "TAN6",
+        # En HOJA 1 HORARIO las máquinas se llaman TAN; sus actividades
+        # están en el segundo bloque de EXTRUSION con encabezados EE01, etc.
+        # El Excel usa el número cero: EE01, EE02... (no la letra O).
+        "TAN1": "EE01",
+        "TAN2": "EE02",
+        "TAN3": "EE03",
+        "TAN4": "EE04",
+        "TAN6": "EE06",
     }
     return aliases.get(raw.replace(" ", "").replace("-", ""), raw)
 
@@ -683,6 +691,7 @@ with st.expander("🔎 Excel maestro cargado", expanded=False):
         st.write(f"**Máquinas en HOJA 1 HORARIO:** {len(HORARIO)}")
         st.write(f"**Actividades leídas:** {len(ACTIVIDADES)}")
         st.write("**Hojas esperadas:** HOJA 1 HORARIO, EXTRUSION, TF ESPUMADOS, TF PRESION, TF RIG, ML Periferico")
+        st.write("**Equivalencias TAN:** TAN1→EE01, TAN2→EE02, TAN3→EE03, TAN4→EE04, TAN6→EE06")
 
 
 
