@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """
 RUTA DE LUBRICACIÓN - Dashboard oscuro
@@ -45,23 +46,25 @@ BASE_DIR = Path(__file__).resolve().parent
 # Linux/GitHub distingue mayúsculas y minúsculas, por eso aquí
 # se busca exactamente ese nombre y también algunas variantes.
 CANDIDATOS_EXCEL = [
-    # Excel actualizado que acabas de compartir.
+    # Excel nuevo adjuntado por el administrador (incluye el espacio antes de (2)).
+    BASE_DIR / "RUTA LUB V2 OCT 2026 (2).xlsx",
+    # Variante sin espacio que también se usó en versiones anteriores.
     BASE_DIR / "RUTA LUB V2 OCT 2026(2).xlsx",
-    # Nombre que ya usa tu repositorio de GitHub.
+    # Nombre canónico que se conservará en GitHub cuando se reemplace el Excel antiguo.
     BASE_DIR / "ruta_lub_v2_oct_2026.xlsx",
     BASE_DIR / "ruta_lub_v2_oct_2026.xlsm",
-    BASE_DIR / "RUTA LUB V2 OCT 2026(1).xlsx",
     BASE_DIR / "RUTA LUB V2 OCT 2026.xlsx",
+    BASE_DIR / "RUTA LUB V2 OCT 2026(1).xlsx",
 ]
 
-# También busca en la carpeta desde donde se ejecuta Streamlit y
-# en la carpeta del proyecto. Esto evita problemas si app.py se
-# mueve dentro de una subcarpeta.
+# También busca en la carpeta desde donde se ejecuta Streamlit.
 CANDIDATOS_EXCEL += [
+    Path.cwd() / "RUTA LUB V2 OCT 2026 (2).xlsx",
     Path.cwd() / "RUTA LUB V2 OCT 2026(2).xlsx",
     Path.cwd() / "ruta_lub_v2_oct_2026.xlsx",
-    Path.cwd() / "RUTA LUB V2 OCT 2026(1).xlsx",
+    Path.cwd() / "ruta_lub_v2_oct_2026.xlsm",
     Path.cwd() / "RUTA LUB V2 OCT 2026.xlsx",
+    Path.cwd() / "RUTA LUB V2 OCT 2026(1).xlsx",
 ]
 
 ARCHIVO_RUTA = next((p for p in CANDIDATOS_EXCEL if p.exists()), None)
@@ -455,12 +458,20 @@ def maquina_equivalente(maquina):
         "TF02": "TF02",
         "TF03": "TF03",
         "MP": "MP",
-        # La hoja ML Periferico usa un encabezado compartido de Sistema de
-        # Transporte para S.T RIG y S.T ESP.
-        "S.TRIG": "SISTTRANSPORTE",
-        "S.TESP": "SISTTRANSPORTE",
-        "STRIG": "SISTTRANSPORTE",
-        "STESP": "SISTTRANSPORTE",
+        # En el Excel actualizado S.T RIG y S.T ESP tienen columnas separadas;
+        # no se deben mezclar sus actividades ni sus minutos.
+        "S.TRIG": "STRIG",
+        "S.TESP": "STESP",
+        "STRIG": "STRIG",
+        "STESP": "STESP",
+        # El horario abrevia Materias Primas como MT PRIMAS.
+        "MTPRIMAS": "MATERIASPRIMAS",
+        "MATERIASPRIMAS": "MATERIASPRIMAS",
+        # Encabezados de máquinas de ML Periferico que incluyen el día.
+        "TF22SAB": "TF22+ML",
+        "TF23SAB": "TF23+ML",
+        "41VIERNES": "TF41",
+        "42VIERNES": "TF42",
         # En HOJA 1 HORARIO las máquinas se llaman TAN; sus actividades
         # están en el segundo bloque de EXTRUSION con encabezados EE01, etc.
         # El Excel usa el número cero: EE01, EE02... (no la letra O).
@@ -471,6 +482,22 @@ def maquina_equivalente(maquina):
         "TAN6": "EE06",
     }
     return aliases.get(raw.replace(" ", "").replace("-", ""), raw)
+
+
+def normalizar_encabezado_maquina(valor):
+    """Convierte encabezados del Excel en identificadores comparables al horario.
+
+    Quita notas de encabezado como "(Viernes)" sin perder el nombre real de
+    la máquina y normaliza abreviaturas usadas en ML Periferico.
+    """
+    if valor is None:
+        return ""
+    texto = str(valor).strip()
+    # TF15 (Viernes) identifica TF15; el día de la ruta sigue gobernado por
+    # HOJA 1 HORARIO, porque en el Excel el horario y esta nota no coinciden.
+    texto = re.sub(r"\s*\([^)]*\)\s*$", "", texto)
+    texto = texto.strip()
+    return normalizar_maquina(maquina_equivalente(texto))
 
 
 def actividad_especial_para_maquina(texto, maquina):
@@ -569,114 +596,163 @@ def leer_excel_maestro(ruta, version_archivo):
     # ---------- ACTIVIDADES ----------
     actividades = []
 
-    def leer_bloque(ws_name, header_row, start_row, end_row, start_col=3):
+    def valor_no_vacio(valor):
+        if valor is None:
+            return False
+        if isinstance(valor, str) and not valor.strip():
+            return False
+        return True
+
+    def a_minutos(valor, fallback=None):
+        """Convierte a minutos. Si la celda contiene una marca de texto, usa B como respaldo."""
+        if valor_no_vacio(valor):
+            try:
+                return float(valor)
+            except (TypeError, ValueError):
+                pass
+        if valor_no_vacio(fallback):
+            try:
+                return float(fallback)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def leer_bloque(
+        ws_name, header_row, start_row, end_row, start_col=3,
+        dia_permitido=None,
+    ):
+        """Lee una tabla de actividades y sus máquinas.
+
+        Regla de lectura del Excel:
+        - Si el cuadro usa cantidades/minutos dentro de columnas de máquina,
+          cada fila se asigna solo a las máquinas con una celda llena y usa ese
+          valor como duración. Una celda vacía significa que esa fila no está
+          asignada a esa máquina.
+        - Si ninguna celda de máquina del cuadro contiene datos, el cuadro usa
+          la columna B como tiempo común y las actividades se asignan a todos
+          los encabezados de máquina del cuadro.
+        """
         ws = wb[ws_name]
         headers = {}
-
         for c in range(start_col, ws.max_column + 1):
             value = ws.cell(header_row, c).value
-            if value:
-                headers[c] = str(value).strip()
+            if value is None or not str(value).strip():
+                continue
+            maquina = normalizar_encabezado_maquina(value)
+            if maquina:
+                headers[c] = maquina
+
+        if not headers:
+            return
+
+        # Detecta el formato del cuadro completo: valores por máquina o tiempo
+        # compartido en la columna B. Esto evita asignar una tarea a una máquina
+        # solo por aparecer en el encabezado cuando esa fila no tiene cantidad.
+        usa_valores_por_maquina = any(
+            valor_no_vacio(ws.cell(r, c).value)
+            for r in range(start_row, end_row + 1)
+            for c in headers
+        )
 
         for r in range(start_row, end_row + 1):
             actividad = ws.cell(r, 1).value
-            tiempo = ws.cell(r, 2).value
-
-            if actividad is None:
+            tiempo_compartido = ws.cell(r, 2).value
+            if not valor_no_vacio(actividad):
+                continue
+            actividad_txt = str(actividad).strip()
+            if not actividad_txt:
                 continue
 
-            actividad = str(actividad).strip()
-            if not actividad:
-                continue
+            if usa_valores_por_maquina:
+                # Los minutos de cada columna definen la pertenencia y duración.
+                for c, maquina in headers.items():
+                    valor_maquina = ws.cell(r, c).value
+                    if not valor_no_vacio(valor_maquina):
+                        continue
+                    minutos = a_minutos(valor_maquina, tiempo_compartido)
+                    item = {
+                        "hoja": ws_name,
+                        "bloque": f"{ws_name} / bloque {header_row}",
+                        "maquina_columna": maquina,
+                        "actividad": actividad_txt,
+                        "minutos": minutos,
+                        "fila_excel": r,
+                    }
+                    if dia_permitido is not None:
+                        item["dia_permitido"] = dia_permitido
+                    actividades.append(item)
+            else:
+                # Este cuadro no tiene cantidades dentro de columnas de máquina:
+                # aplica cada actividad a todas las máquinas del encabezado.
+                minutos = a_minutos(tiempo_compartido)
+                for maquina in headers.values():
+                    item = {
+                        "hoja": ws_name,
+                        "bloque": f"{ws_name} / bloque {header_row}",
+                        "maquina_columna": maquina,
+                        "actividad": actividad_txt,
+                        "minutos": minutos,
+                        "fila_excel": r,
+                    }
+                    if dia_permitido is not None:
+                        item["dia_permitido"] = dia_permitido
+                    actividades.append(item)
 
-            try:
-                minutos = float(tiempo) if tiempo is not None else None
-            except Exception:
-                minutos = None
-
-            # El bloque aplica a las máquinas nombradas en el encabezado.
-            for c, maquina in headers.items():
-                actividades.append({
-                    "hoja": ws_name,
-                    "bloque": f"{ws_name} / bloque {header_row}",
-                    "maquina_columna": maquina,
-                    "actividad": actividad,
-                    "minutos": minutos,
-                    "fila_excel": r,
-                })
-
-    # EXTRUSION
+    # Los cuadros sin cantidades por máquina usan el tiempo común de la columna B.
     leer_bloque("EXTRUSION", 4, 5, 20)
     leer_bloque("EXTRUSION", 24, 25, 39)
-
-    # TF ESPUMADOS
     leer_bloque("TF ESPUMADOS", 4, 5, 22)
     leer_bloque("TF ESPUMADOS", 26, 27, 45)
-
-    # TF PRESION
     leer_bloque("TF PRESION", 4, 5, 16)
     leer_bloque("TF PRESION", 20, 21, 34)
 
-    # TF RIG
+    # TF RIG tiene minutos dentro de las columnas de las máquinas; los espacios
+    # vacíos de cada fila se respetan. El segundo cuadro indica revisión sábado.
     leer_bloque("TF RIG", 4, 5, 17)
-    leer_bloque("TF RIG", 21, 22, 34)
+    leer_bloque("TF RIG", 21, 22, 34, dia_permitido=5)
 
-    # ML PERIFERICO: se lee con la misma regla que los demás cuadros.
-    # La lista de actividades está en la columna A, el tiempo en la B y los
-    # encabezados de máquina en la fila 3. Todas las actividades del cuadro
-    # corresponden a cada máquina cuyo nombre aparece en ese encabezado;
-    # no se exige una X en las celdas interiores.
+    # ML Periferico también usa cantidades/minutos en las columnas de máquina.
+    # Las columnas identificadas como viernes se consultan el viernes; el resto,
+    # el sábado. No se duplica todo el cuadro en MP: el horario indica que MP es
+    # "Mantenimiento Preventivo del día", no una columna de máquina de este cuadro.
     ws = wb["ML Periferico"]
+    headers = {}
+    dias_por_maquina = {}
+    for c in range(3, ws.max_column + 1):
+        encabezado = ws.cell(3, c).value
+        if not valor_no_vacio(encabezado):
+            continue
+        maquina = normalizar_encabezado_maquina(encabezado)
+        if not maquina:
+            continue
+        headers[c] = maquina
+        dias_por_maquina[maquina] = 4 if "VIERNES" in str(encabezado).upper() else 5
+
     for r in range(4, ws.max_row + 1):
         actividad = ws.cell(r, 1).value
-        tiempo = ws.cell(r, 2).value
-        if actividad is None or not str(actividad).strip():
+        tiempo_compartido = ws.cell(r, 2).value
+        if not valor_no_vacio(actividad):
             continue
-        try:
-            minutos = float(tiempo) if tiempo is not None else None
-        except Exception:
-            minutos = None
-
         actividad_txt = str(actividad).strip()
+        if not actividad_txt:
+            continue
 
-        # Compatibilidad con el registro especial MP que ya existía.
-        actividades.append({
-            "hoja": "ML Periferico",
-            "bloque": "ML Periferico / sábado quincenal",
-            "maquina_columna": "ESPECIAL_ML",
-            "actividad": actividad_txt,
-            "minutos": minutos,
-            "fila_excel": r,
-            "dia_permitido": 5,
-        })
-
-        # Relacionar la actividad con cada máquina escrita en el encabezado.
-        for c in range(3, ws.max_column + 1):
-            encabezado = ws.cell(3, c).value
-            if encabezado is None or not str(encabezado).strip():
+        # Esta hoja sí contiene valores por máquina. Solo las columnas con
+        # cantidad asignada reciben la actividad y el tiempo de esa celda.
+        for c, maquina in headers.items():
+            valor_maquina = ws.cell(r, c).value
+            if not valor_no_vacio(valor_maquina):
                 continue
-            encabezado_texto = str(encabezado).strip()
-            encabezado_norm = normalizar_maquina(encabezado_texto)
-            alias_encabezado = {
-                "SISTTRANSPORTE": "SISTTRANSPORTE",
-                "TF22SAB": "TF22+ML",
-                "TF23SAB": "TF23+ML",
-                "41VIERNES": "TF41",
-                "42VIERNES": "TF42",
-            }
-            maquina_columna = alias_encabezado.get(encabezado_norm, encabezado_norm)
-            # Los encabezados expresamente identificados como viernes se
-            # muestran el viernes; el resto del cuadro pertenece al sábado.
-            dia_permitido = 4 if "VIERNES" in encabezado_texto.upper() else 5
-            actividades.append({
+            item = {
                 "hoja": "ML Periferico",
-                "bloque": f"ML Periferico / {maquina_columna}",
-                "maquina_columna": maquina_columna,
+                "bloque": f"ML Periferico / {maquina}",
+                "maquina_columna": maquina,
                 "actividad": actividad_txt,
-                "minutos": minutos,
+                "minutos": a_minutos(valor_maquina, tiempo_compartido),
                 "fila_excel": r,
-                "dia_permitido": dia_permitido,
-            })
+                "dia_permitido": dias_por_maquina[maquina],
+            }
+            actividades.append(item)
 
     return horario, actividades
 
@@ -819,26 +895,17 @@ def buscar_actividades(maquina, fecha):
     m = maquina_equivalente(maquina)
     resultado = []
 
-    # Casos especiales: MP solo tiene bloque explícito en ML Periferico,
-    # y ese bloque está definido como sábado/quincenal.
-    if m == "MP" and fecha.weekday() == 5:
-        for a in ACTIVIDADES:
-            if a["hoja"] == "ML Periferico" and a["maquina_columna"] == "ESPECIAL_ML":
-                resultado.append(a)
-        return resultado
+    # MP en HOJA 1 HORARIO significa "Mantenimiento Preventivo del día".
+    # No existe una columna de máquina MP en el Excel actualizado; no se deben
+    # asignar automáticamente a MP las actividades de todas las columnas de
+    # ML Periferico. Si se añade un cuadro específico para MP, se leerá allí.
+    if m == "MP":
+        return []
 
     for a in ACTIVIDADES:
-        if a["hoja"] == "ML Periferico":
-            # Respetar el día indicado por el encabezado. Las columnas
-            # 41 Viernes/42 Viernes corresponden al viernes; el resto,
-            # al cuadro sabatino. La asignación no depende de celdas marcadas.
-            dia_permitido = a.get("dia_permitido", 5)
-            if fecha.weekday() != dia_permitido:
-                continue
-            if a["maquina_columna"] == "ESPECIAL_ML" and m != "MP":
-                continue
-            if a["maquina_columna"] != "ESPECIAL_ML" and m == "MP":
-                continue
+        dia_permitido = a.get("dia_permitido")
+        if dia_permitido is not None and fecha.weekday() != dia_permitido:
+            continue
 
         col = normalizar_maquina(a["maquina_columna"])
         mm = normalizar_maquina(m)
@@ -862,8 +929,10 @@ def buscar_actividades(maquina, fecha):
             coincide = True
         if not coincide and mm in {"TF23", "TF23ML", "TF23+ML"} and col == "TF23+ML":
             coincide = True
-        # Ambas máquinas de Sistema de Transporte comparten ese encabezado.
-        if not coincide and mm in {"SISTTRANSPORTE", "STRIG", "STESP", "S.TRIG", "S.TESP"} and col == "SISTTRANSPORTE":
+        # Mantener compatibilidad con archivos antiguos que usaban un encabezado
+        # compartido de Sistema de Transporte. En el Excel actual STRIG y STESP
+        # tienen columnas separadas y ya se comparan de forma independiente.
+        if not coincide and mm in {"STRIG", "STESP", "SISTTRANSPORTE"} and col == "SISTTRANSPORTE":
             coincide = True
 
         # TF20 aparece en ambos bloques de TF RIG. Se conserva el bloque
